@@ -217,9 +217,20 @@ export async function presentationPhase(sessionId: string): Promise<string> {
   return session.phase;
 }
 
+/**
+ * Claimene verifieren fikk. `unknown` og ikke `string` med vilje: et SD-JWT VC bærer alltid
+ * protokoll-claimene ved siden av bevisets egne, og `status` er et NØSTET OBJEKT
+ * (`{ status_list: { uri, idx } }`). Typer du dette som `Record<string, string>`, lyver typen —
+ * og React kaster «Objects are not valid as a React child» første gang noen viser verdien rått.
+ */
+export type PresentedClaims = Record<string, unknown>;
+
+/** Claimene ETHVERT SD-JWT VC bærer, uansett bevistype. Ikke det beviset handler om. */
+export const PROTOCOL_CLAIMS = ["iss", "vct", "iat", "exp", "nbf", "status", "cnf"];
+
 export interface PresentationResult {
   status: "VERIFIED" | "REJECTED" | "EXPIRED";
-  presentations?: { claims: Record<string, string> }[] | null;
+  presentations?: { claims: PresentedClaims }[] | null;
   failures?: { check?: string | null; detail?: string | null }[];
 }
 

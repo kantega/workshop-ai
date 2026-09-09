@@ -6,11 +6,13 @@ import {
   platformStatus,
   presentationPhase,
   presentationResult,
+  PROTOCOL_CLAIMS,
   startPresentation,
   walletUri,
   type AppSetup,
   type AppSpec,
   type PlatformStatus,
+  type PresentedClaims,
   type ServiceStatus,
 } from "./api";
 import {
@@ -452,9 +454,36 @@ function UtstedPanel({ setup, grunnlag }: { setup: AppSetup; grunnlag: Grunnlag 
 type Scan =
   | { kind: "idle" }
   | { kind: "waiting"; qr: string; uri: string }
-  | { kind: "verified"; claims: Record<string, string> }
+  | { kind: "verified"; claims: PresentedClaims }
   | { kind: "rejected"; reason: string }
   | { kind: "error"; message: string };
+
+/**
+ * Én claim-verdi som tekst. `status` er et objekt (`{ status_list: { uri, idx } }`), og et objekt
+ * rett inn i JSX kaster «Objects are not valid as a React child» — som river ned HELE React-treet
+ * og gir en blank side. Alt som ikke er en streng blir derfor JSON her.
+ */
+function somTekst(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return "";
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
+}
+
+function ClaimTabell({ claims }: { claims: PresentedClaims }) {
+  return (
+    <table>
+      <tbody>
+        {Object.entries(claims).map(([key, value]) => (
+          <tr key={key}>
+            <th>{key}</th>
+            <td className="mono">{somTekst(value)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
 
 function FremvisPanel({ setup }: { setup: AppSetup }) {
   const [scan, setScan] = useState<Scan>({ kind: "idle" });
@@ -522,26 +551,35 @@ function FremvisPanel({ setup }: { setup: AppSetup }) {
           </p>
         </div>
       )}
-      {scan.kind === "verified" && (
-        <>
-          <div className={`verdict ${scan.claims["kvalifisert"] === "ja" ? "ok" : "bad"}`}>
-            {scan.claims["kvalifisert"] === "ja" ? "✔ Kvalifisert" : "✖ Ikke kvalifisert"} —{" "}
-            {scan.claims["navn"] ?? "(ukjent)"}
-          </div>
-          <table>
-            <tbody>
-              {Object.entries(scan.claims).map(([key, value]) => (
-                <tr key={key}>
-                  <th>{key}</th>
-                  <td className="mono">{value}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </>
-      )}
+      {scan.kind === "verified" && <Kjennelse claims={scan.claims} />}
       {scan.kind === "rejected" && <div className="verdict bad">✖ Avvist: {scan.reason}</div>}
       {scan.kind === "error" && <pre className="error">{scan.message}</pre>}
     </section>
+  );
+}
+
+/**
+ * Det kommunen faktisk fikk. Beviset skiller seg i to, og skillet er verdt å vise fram: claimene
+ * fremvisningsregelen ba om, og protokoll-claimene ethvert SD-JWT VC bærer uansett — utsteder,
+ * bevistype, gyldighet og statuslista beviset kan tilbakekalles gjennom.
+ */
+function Kjennelse({ claims }: { claims: PresentedClaims }) {
+  const kvalifisert = somTekst(claims["kvalifisert"]) === "ja";
+  const bevisets = Object.fromEntries(Object.entries(claims).filter(([key]) => !PROTOCOL_CLAIMS.includes(key)));
+  const protokoll = Object.fromEntries(Object.entries(claims).filter(([key]) => PROTOCOL_CLAIMS.includes(key)));
+
+  return (
+    <>
+      <div className={`verdict ${kvalifisert ? "ok" : "bad"}`}>
+        {kvalifisert ? "✔ Kvalifisert" : "✖ Ikke kvalifisert"} — {somTekst(claims["navn"]) || "(ukjent)"}
+      </div>
+      <ClaimTabell claims={bevisets} />
+      {Object.keys(protokoll).length > 0 && (
+        <details>
+          <summary className="muted">Protokoll-claimene beviset alltid bærer</summary>
+          <ClaimTabell claims={protokoll} />
+        </details>
+      )}
+    </>
   );
 }
