@@ -107,7 +107,7 @@ export function platformAuth(options: PlatformAuthOptions): Plugin {
         Authorization: `Basic ${basic}`,
       },
       // Uten `scope` får vi alt klienten er registrert med — det er riktig her: README sier hvilke
-      // skoper registreringen skal ha, og statuspanelet viser hva tokenet faktisk fikk.
+      // scopes registreringen skal ha, og statuspanelet viser hva tokenet faktisk fikk.
       body: new URLSearchParams({ grant_type: "client_credentials", resource }),
     });
     const text = await response.text();

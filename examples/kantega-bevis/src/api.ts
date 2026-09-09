@@ -65,7 +65,7 @@ interface Row {
  * sørg for at verifieren har et aktivt tilgangssertifikat.
  *
  * Hvilken organisasjon er aldri en parameter — den utledes av klient-id-en. Får du 404 på noe du
- * er sikker på finnes, mangler klienten skopet: se `scope` i statuspanelet.
+ * er sikker på finnes, mangler klienten scopet: se `scope` i statuspanelet.
  */
 export async function ensureSetup(spec: AppSpec, onStep: (step: string) => void): Promise<AppSetup> {
   onStep("Finner utstederen …");

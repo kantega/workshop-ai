@@ -112,7 +112,7 @@ export default function App() {
       {setupError ? (
         <div className="panel error-panel">
           <h2>Fikk ikke rigget opp plattformen</h2>
-          <p>Se statuspanelet over: er legitimasjonen på plass, og bærer tokenet skopene appen trenger?</p>
+          <p>Se statuspanelet over: er legitimasjonen på plass, og bærer tokenet scopene appen trenger?</p>
           <pre className="error">{setupError}</pre>
         </div>
       ) : !setup ? (
@@ -146,7 +146,7 @@ function TokenLamp({ service }: { service: ServiceStatus | undefined }) {
     return (
       <span>
         <span className="lamp ok">bærer</span>{" "}
-        <span className="muted mono">{service.scope || "(ingen skoper)"}</span>
+        <span className="muted mono">{service.scope || "(ingen scopes)"}</span>
       </span>
     );
   }
@@ -251,7 +251,7 @@ function StatusPanel() {
       ))}
       <p className="muted">
         Klient-id og hemmelighet bor i <code>.env.local</code> og leses bare av dev-serveren, som henter ett
-        token per tjeneste og legger det på hvert kall. Nettleseren ser aldri hemmeligheten. Skopene i
+        token per tjeneste og legger det på hvert kall. Nettleseren ser aldri hemmeligheten. Scopene i
         «Legitimasjon» er de tokenet faktisk fikk — mangler et, er det registreringen i kontrollflata som
         skal utvides.
         {platform?.clientId && (

@@ -32,10 +32,10 @@ opprett en klient:
 |---|---|
 | Navn | noe du kjenner igjen, f.eks. `ks-workshop <ditt navn>` |
 | Autentisering | **`client_secret`** |
-| Skoper | lista under |
+| Scopes | lista under |
 | Snevring til utstedere | ingen |
 
-Skopene appen bruker:
+Scopene appen bruker:
 
 ```
 issuers:read  verifiers:read
@@ -50,12 +50,12 @@ verification:write  presentations:read  presentations:write
 Du får en klient-id (`cli_…`) og en hemmelighet (`cs_…`). **Hemmeligheten vises én gang.** Den
 er nok til å opptre som organisasjonen din: ikke i et repo, ikke i en chat.
 
-> **Skjemaet i kontrollflata tilbyr ikke alle skopene (per 2026-09-09).** Det viser åtte grupper,
+> **Skjemaet i kontrollflata tilbyr ikke alle scopene (per 2026-09-09).** Det viser åtte grupper,
 > og `access-certificates`, `credentials`, `issuance`, `deploy`, `verification` og `presentations`
 > er ikke blant dem. En klient fra skjemaet stopper derfor med `404` på
 > `/v1/access-certificates`. Omveien til det er rettet: registrer klienten i skjemaet med
 > **Integrasjonsklienter: skrive** avkrysset, og bruk den til å registrere den egentlige klienten
-> med alle skopene via API-et. To kall:
+> med alle scopene via API-et. To kall:
 >
 > ```bash
 > TOKEN=$(curl -s -X POST https://bevisstudio.agreeabledune-b07a297d.norwayeast.azurecontainerapps.io/oauth/token \
@@ -105,7 +105,7 @@ npm run dev
 ```
 
 Åpne <http://localhost:5173>. Øverst står fire lamper. De to KS-lampene skal si «svarer»; de to
-plattformlampene skal si «svarer» **og** «bærer» med skopene tokenet fikk. Panelet viser
+plattformlampene skal si «svarer» **og** «bærer» med scopene tokenet fikk. Panelet viser
 kommandoen som fikser det som mangler. Deretter, tre paneler nedover: «Hent testpersoner» →
 velg en (`person-001` Maja Solberg er et trygt valg) → «Gi samtykke og hent inntekt» → «Utsted
 til lommebok» → «Ny fremvisning».
@@ -120,8 +120,8 @@ Kundeveien inn i plattformen er OAuth 2.0 `client_credentials`. Alt du trenger �
   virker ikke mot verifieren, med vilje. Dev-serveren henter derfor ett token for `/api/studio`
   og ett for `/api/verifier`, cacher dem til de utløper, og prøver én gang på nytt ved 401.
 - **Organisasjonen er aldri en parameter.** Den utledes av klient-id-en.
-- **404 betyr tre ting** — finnes ikke, er ikke din, eller du mangler skopet — og de er
-  uskillbare med vilje. Sjekk skopene i statuspanelet før du feilsøker en 404.
+- **404 betyr tre ting** — finnes ikke, er ikke din, eller du mangler scopet — og de er
+  uskillbare med vilje. Sjekk scopene i statuspanelet før du feilsøker en 404.
 
 Appen bruker `client_secret_basic` og Bearer-token, den korte veien. Plattformen støtter også
 `private_key_jwt` med DPoP-bundne tokens, som gjør et stjålet token verdiløst — men den veien
@@ -130,7 +130,7 @@ På en workshop er det den ene tingen som stjeler formiddagen. Prisen for den ko
 lekket token kan brukes til det utløper. Derfor når hemmeligheten likevel aldri nettleseren.
 
 `/app-api/status` er dev-serverens eget statusbilde: om tjenestene svarer, om tokenet bærer, og
-hvilke skoper det fikk. Det er det statuspanelet leser.
+hvilke scopes det fikk. Det er det statuspanelet leser.
 
 ## Lommebok
 
@@ -160,12 +160,12 @@ hemmeligheten er rotert. Endepunktet sier ikke hvilken, med vilje.
 **Legitimasjon «avvist», `invalid_target`** — `EIDAS_VERIFIER_URL` står ikke i
 `resources_supported`. Miljøet har flyttet; feilmeldingen viser hva som annonseres.
 
-**404 på noe som finnes** — du mangler skopet. Sammenlign skopene i statuspanelet med lista over.
+**404 på noe som finnes** — du mangler scopet. Sammenlign scopene i statuspanelet med lista over.
 
 **KS-lampene nede** — `./start.sh --mock` i KS-repoet. Sandkassen krever at 8080–8087, 3000 og
 3001 er ledige, og nekter å starte ellers.
 
-**«Fikk ikke rigget opp plattformen»** — se statuspanelet: bærer tokenet, og har det skopene?
+**«Fikk ikke rigget opp plattformen»** — se statuspanelet: bærer tokenet, og har det scopene?
 Sier meldingen at organisasjonen mangler utsteder eller verifier, opprett dem i kontrollflata.
 
 ## Hva som er verifisert, og hva som ikke er det
