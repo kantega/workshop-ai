@@ -107,8 +107,9 @@ hvilke skoper det fikk. Det er det statuspanelet leser.
 ## Lommebok
 
 Utstederen i testmiljøet er nåbar fra internett, så **en lommebok på telefonen** virker uten
-tunnel. Har du ingen, ta kontakt med Kantega-teamet på workshopen — de har en demolommebok som tar
-imot begge lenkene som tekst.
+tunnel. Kantegas egen lommebok for iPhone ligger på TestFlight:
+<https://testflight.apple.com/join/VRKXvPRA> (installer TestFlight fra App Store først). Skann
+QR-koden i steg 2 for å motta beviset, og QR-koden i steg 3 for å vise det fram.
 
 ## Samtykkesperren, som er ekte
 
