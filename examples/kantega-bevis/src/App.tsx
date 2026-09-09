@@ -444,6 +444,7 @@ function UtstedPanel({ setup, grunnlag }: { setup: AppSetup; grunnlag: Grunnlag 
           <p className="muted">
             Skann med lommeboka, eller <a href={uri}>åpne på samme enhet</a>.
           </p>
+          <KopierLenke uri={uri} etikett="Kopier tilbudslenka" />
         </div>
       )}
       {error && <pre className="error">{error}</pre>}
@@ -457,6 +458,45 @@ type Scan =
   | { kind: "verified"; claims: PresentedClaims }
   | { kind: "rejected"; reason: string }
   | { kind: "error"; message: string };
+
+/**
+ * QR-koden er for telefonen. Lenka bak den er `openid-credential-offer://…` eller
+ * `openid4vp://…`, og den er verdt å ha i utklippstavla: lim den inn i en lommebok på samme
+ * maskin, i `curl` for å se hva forespørselen faktisk inneholder, eller i en melding til den som
+ * feilsøker sammen med deg.
+ */
+function KopierLenke({ uri, etikett }: { uri: string; etikett: string }) {
+  const [tilstand, setTilstand] = useState<"klar" | "kopiert" | "merket">("klar");
+  const lenke = useRef<HTMLElement>(null);
+
+  const kopier = async () => {
+    try {
+      await navigator.clipboard.writeText(uri);
+      setTilstand("kopiert");
+    } catch {
+      // Utklippstavla krever et sikkert opphav og et fokusert dokument, og kan nektes uansett.
+      // Da merker vi teksten i stedet, så ⌘C/Ctrl+C gjør resten — en blindvei hjelper ingen.
+      const range = document.createRange();
+      if (lenke.current) range.selectNodeContents(lenke.current);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      setTilstand("merket");
+    }
+    window.setTimeout(() => setTilstand("klar"), 2500);
+  };
+
+  return (
+    <div className="kopier">
+      <button className="ghost" onClick={() => void kopier()}>
+        {tilstand === "kopiert" ? "✔ Kopiert" : tilstand === "merket" ? "Merket — trykk ⌘C" : etikett}
+      </button>
+      <code className="mono lenke" ref={lenke}>
+        {uri}
+      </code>
+    </div>
+  );
+}
 
 /**
  * Én claim-verdi som tekst. `status` er et objekt (`{ status_list: { uri, idx } }`), og et objekt
@@ -549,6 +589,7 @@ function FremvisPanel({ setup }: { setup: AppSetup }) {
           <p className="muted">
             Venter på lommeboka … <a href={scan.uri}>åpne på samme enhet</a>
           </p>
+          <KopierLenke uri={scan.uri} etikett="Kopier forespørselen" />
         </div>
       )}
       {scan.kind === "verified" && <Kjennelse claims={scan.claims} />}

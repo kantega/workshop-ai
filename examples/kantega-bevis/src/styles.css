@@ -131,6 +131,27 @@ button.danger {
   border-radius: 8px;
 }
 
+/* Lenka bak QR-koden, til utklippstavla eller til å merke selv. */
+.kopier {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+}
+
+.kopier .lenke {
+  max-width: 100%;
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+  background: var(--ground);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
 .verdict {
   border-radius: 8px;
   padding: 0.7rem 1rem;
