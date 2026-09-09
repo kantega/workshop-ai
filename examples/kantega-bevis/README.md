@@ -32,7 +32,7 @@ opprett en klient:
 |---|---|
 | Navn | noe du kjenner igjen, f.eks. `ks-workshop <ditt navn>` |
 | Autentisering | **`client_secret`** |
-| Scopes | lista under |
+| Scopes | knappen **«Velg alle scopes»** |
 | Snevring til utstedere | ingen |
 
 Scopene appen bruker:
@@ -42,6 +42,7 @@ issuers:read  verifiers:read
 credential-types:read  credential-types:write
 issuance-rules:read  issuance-rules:write
 verification-rules:read  verification-rules:write
+certificates:read  certificates:write
 access-certificates:read  access-certificates:write
 issuance:read  issuance:write  deploy:read  deploy:write
 verification:write  presentations:read  presentations:write
@@ -50,33 +51,8 @@ verification:write  presentations:read  presentations:write
 Du får en klient-id (`cli_…`) og en hemmelighet (`cs_…`). **Hemmeligheten vises én gang.** Den
 er nok til å opptre som organisasjonen din: ikke i et repo, ikke i en chat.
 
-> **Skjemaet i kontrollflata tilbyr ikke alle scopene (per 2026-09-09).** Det viser åtte grupper,
-> og `access-certificates`, `credentials`, `issuance`, `deploy`, `verification` og `presentations`
-> er ikke blant dem. En klient fra skjemaet stopper derfor med `404` på
-> `/v1/access-certificates`. Omveien til det er rettet: registrer klienten i skjemaet med
-> **Integrasjonsklienter: skrive** avkrysset, og bruk den til å registrere den egentlige klienten
-> med alle scopene via API-et. To kall:
->
-> ```bash
-> TOKEN=$(curl -s -X POST https://bevisstudio.agreeabledune-b07a297d.norwayeast.azurecontainerapps.io/oauth/token \
->   -u 'cli_<fra-skjemaet>:cs_<fra-skjemaet>' \
->   --data-urlencode grant_type=client_credentials \
->   --data-urlencode resource=https://bevisstudio.agreeabledune-b07a297d.norwayeast.azurecontainerapps.io | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
-> ```
->
-> ```bash
-> curl -s -X POST https://bevisstudio.agreeabledune-b07a297d.norwayeast.azurecontainerapps.io/v1/integration-clients \
->   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{
->   "name": "ks-workshop <ditt navn>",
->   "authentication": { "method": "CLIENT_SECRET" },
->   "allowedScopes": ["issuers:read","verifiers:read","credential-types:read","credential-types:write",
->     "issuance-rules:read","issuance-rules:write","verification-rules:read","verification-rules:write",
->     "access-certificates:read","access-certificates:write","issuance:read","issuance:write",
->     "deploy:read","deploy:write","verification:write","presentations:read","presentations:write"],
->   "scopeRestriction": null }'
-> ```
->
-> Svaret har `clientId` og `clientSecret` for den nye klienten. Det er DEN som skal i `.env.local`.
+Sertifikatene til utstederen og verifieren trenger du ikke tenke på: appen adopterer Kantegas
+sandkassesertifikat for begge første gang den kjører, og sier hva du skal gjøre hvis det feiler.
 
 ### 2. Legg legitimasjonen i `.env.local`
 

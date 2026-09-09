@@ -105,6 +105,22 @@ export async function ensureSetup(spec: AppSpec, onStep: (step: string) => void)
       })
     ).id;
 
+  onStep("Sjekker utstederens sertifikat …");
+  // Uten et aktivt sertifikat ser alt riktig ut helt til lommeboka: utstederen svarer da
+  // «unsupported_credential_type: Utstederen har ikke et aktivt sertifikat» når beviset skal signeres.
+  const issuerCertificates = await call<Row[]>(studio(`/v1/issuers/${issuer.id}/certificates`));
+  if (!issuerCertificates.some((certificate) => certificate.status === "ACTIVE")) {
+    try {
+      await call(studio(`/v1/issuers/${issuer.id}/certificates/platform-default`), { method: "POST" });
+    } catch (failure) {
+      throw new Error(
+        "Utstederen mangler et aktivt sertifikat, og Kantega-sertifikatet kunne ikke adopteres " +
+          `(${(failure as Error).message}). Prøv knappen «Bruk Kantega-sertifikatet» under Utstedere → ` +
+          "Sertifikater i kontrollflata, og last siden på nytt.",
+      );
+    }
+  }
+
   onStep("Publiserer bevistypen til utstederen …");
   const deployment = await call<{ deployed: { vct: string } }>(
     studio(`/v1/issuance-rules/${issuanceRuleId}/deployment`),
