@@ -136,7 +136,12 @@ hemmeligheten er rotert. Endepunktet sier ikke hvilken, med vilje.
 **Legitimasjon «avvist», `invalid_target`** — `EIDAS_VERIFIER_URL` står ikke i
 `resources_supported`. Miljøet har flyttet; feilmeldingen viser hva som annonseres.
 
-**404 på noe som finnes** — du mangler scopet. Sammenlign scopene i statuspanelet med lista over.
+**404 på noe som finnes** — to årsaker, i denne rekkefølgen. Mangler du scopet, ser du det ved å
+sammenligne statuspanelet med lista over. Er scopene på plass og svaret er en **404 med tom kropp
+på en `POST`**, er klienten *snevret*: «Snevring til utstedere» ble satt da den ble registrert, og
+en snevret klient kan ikke opprette noe som helst — ikke en bevistype, ikke en regel, ikke en ny
+klient. Sjekk med `GET /v1/integration-clients`: er `scopeRestriction` noe annet enn `null`, må du
+registrere en ny klient uten snevring. Feltet kan ikke redigeres i etterkant.
 
 **KS-lampene nede** — `./start.sh --mock` i KS-repoet. Sandkassen krever at 8080–8087, 3000 og
 3001 er ledige, og nekter å starte ellers.
@@ -146,15 +151,58 @@ Sier meldingen at organisasjonen mangler utsteder eller verifier, opprett dem i 
 
 ## Hva som er verifisert, og hva som ikke er det
 
-**Verifisert 2026-09-09, uten legitimasjon:** testmiljøets metadatadokument, helsesjekker på
-tjenestene og token-endepunktets feilform (`401 invalid_client`). Appen starter, `npm run check`
-er grønn, statuspanelet viser «ikke satt opp» uten `.env.local` og «avvist» med feil hemmelighet.
+**Hele reisen er kjørt ende til ende 2026-09-09**, med en ekte klient og en ekte lommebok på
+telefon: bevistypen opprettes, utstederen og verifieren får sertifikatene sine, tilbudet havner i
+lommeboka, og verifieren dømmer fremvisningen `VERIFIED`. Den leverte `navn`, `ordning`,
+`inntektsaar` og `kvalifisert: ja` — og **ikke** `beregningsbeloep`, som ligger i beviset, men som
+regelen ikke ber om. Det er hele poenget, og det er nå målt.
 
-**Ikke verifisert:** selve reisen med en ekte klient. Den første som kjører med gyldig
-`.env.local` er den som ser at bevistypen opprettes, at verifieren får plattformens
-tilgangssertifikat, og at en telefon-lommebok når tilbudet. KS-siden (`src/ks.ts`) er kjørt mot
-en levende sandkasse tidligere: `person-001` gir inntektsår 2025, 485 000 kr og «rett til
-redusert betaling».
+KS-siden (`src/ks.ts`) er kjørt mot en levende sandkasse: `person-001` gir inntektsår 2025,
+485 000 kr og «rett til redusert betaling».
+
+**Ikke verifisert:** DigDirs demolommebok — se «Lommebok» over. Bruk vår.
+
+## Bygg videre med Claude Code
+
+Denne appen er ett bevis og én reise. Din er en annen, og veien dit er å kopiere mønsteret. Bytt ut
+det som står i vinkelparenteser:
+
+```text
+Jeg er på KS-hackathon og skal bygge videre på appen i examples/kantega-bevis.
+
+Les disse først, i denne rekkefølgen:
+- examples/kantega-bevis/README.md — hvordan appen henger sammen
+- examples/kantega-bevis/src/api.ts — ALLE kallene mot plattformen, og ensureSetup()
+- examples/kantega-bevis/src/App.tsx — reisen: sandkasse → utstedelse → fremvisning
+- examples/kantega-bevis/server/platform-auth.ts — token per tjeneste
+
+Oppgaven: <hva appen skal gjøre, i to–tre setninger>
+
+Beviset skal hete «<Bevisnavn>» og bære claimene <claim1, claim2, claim3>.
+Fremvisningen skal be om <delmengden mottakeren faktisk trenger> — og aldri
+<det følsomme som ligger i beviset, men ikke skal utleveres>.
+
+Regler:
+- Kopier mønsteret i src/api.ts. Alt går kundeveien: bare API-er en
+  integrasjonspartner også har. Trenger du noe som ikke finnes, si fra —
+  ikke finn på et endepunkt.
+- ensureSetup() er finn-eller-opprett og må forbli idempotent. Den kjøres på
+  hver sidelast.
+- Ikke rør server/platform-auth.ts, og ikke flytt klient-id eller hemmelighet
+  inn i nettleseren. Hemmeligheten er nok til å opptre som organisasjonen min.
+- Claims fra en fremvisning er VILKÅRLIG JSON, ikke strenger: beviset bærer
+  alltid iss, vct, iat, exp og status ved siden av sine egne, og status er et
+  nøstet objekt. Bruk PresentedClaims og somTekst() slik App.tsx gjør.
+- Norsk i UI og kommentarer, engelsk i identifikatorer.
+
+Verifiser før du sier deg ferdig: npx tsc --noEmit skal være ren, og du skal ha
+kjørt reisen i nettleseren på http://localhost:5173 og sett den virke. Ikke be
+meg sjekke — sjekk selv, og vis meg hva du så.
+```
+
+De fire linjene som betyr mest er filene å lese, «kopier mønsteret i `api.ts`», regelen om claims
+som JSON, og kravet om å verifisere selv. Uten den siste får du kode som kompilerer og en påstand
+om at den virker.
 
 ## Hva dette er, og ikke er
 
