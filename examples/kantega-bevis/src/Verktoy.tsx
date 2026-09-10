@@ -1,14 +1,23 @@
 import QRCode from "qrcode";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  ensureSetup,
+  ensureVeiviser,
   orderCredential,
   platformStatus,
+  presentationPhase,
+  presentationResult,
+  PROTOCOL_CLAIMS,
+  startPresentation,
+  walletUri,
   type AppSetup,
+  type AppSpec,
   type PlatformStatus,
+  type PresentedClaims,
   type ServiceStatus,
+  type VeiviserSetup,
 } from "./api";
-import { Kjennelse, KopierLenke, useAppSetup, usePresentation } from "./presentation";
-import { SPEC } from "./spec";
+import { CREDENTIALS, VEIVISER_RULE, type CredentialDefinition } from "./catalog";
 import {
   advanceToConsent,
   alive as ksAlive,
@@ -24,6 +33,28 @@ import {
   type SjekkResultat,
 } from "./ks";
 
+/**
+ * Beviset denne appen utsteder. Legg merke til hva fremvisningsregelen IKKE ber om:
+ * beregningsbeløp står i beviset, men kommunen får det aldri. Den får «kvalifisert: ja» for
+ * riktig ordning og år - som er alt vedtaket trenger. Det er hele poenget med å la innbyggeren
+ * fremvise et bevis framfor at kommunen slår opp inntekten.
+ */
+const SPEC: AppSpec = {
+  credentialTypeName: "Inntektsbekreftelse",
+  claims: [
+    { name: "navn", dataType: "STRING", mandatory: true },
+    { name: "ordning", dataType: "STRING", mandatory: true },
+    { name: "inntektsaar", dataType: "STRING", mandatory: true },
+    { name: "kvalifisert", dataType: "STRING", mandatory: true },
+    { name: "beregningsbeloep", dataType: "STRING", mandatory: false },
+  ],
+  rule: {
+    name: "Redusert foreldrebetaling — innsjekk",
+    queryId: "inntektsbekreftelse",
+    requestedClaims: ["navn", "ordning", "inntektsaar", "kvalifisert"],
+  },
+};
+
 const KS_KOMMANDO = "./start.sh --mock            # i din klone av github.com/ks-no/workshop-ai";
 const ENV_KOMMANDO = "cp .env.example .env.local   # og fyll inn EIDAS_CLIENT_ID og EIDAS_CLIENT_SECRET, så npm run dev på nytt";
 
@@ -35,18 +66,43 @@ interface Grunnlag {
   sjekk: SjekkResultat;
 }
 
-export default function Debug() {
-  const { setup, step: setupStep, error: setupError } = useAppSetup(SPEC);
+export default function Verktoy() {
+  const [setup, setSetup] = useState<AppSetup | null>(null);
+  const [setupStep, setSetupStep] = useState("Rigger opp i testmiljøet …");
+  const [setupError, setSetupError] = useState<string | null>(null);
   const [grunnlag, setGrunnlag] = useState<Grunnlag | null>(null);
+  const [veiviser, setVeiviser] = useState<VeiviserSetup | null>(null);
+  const [veiviserStep, setVeiviserStep] = useState<string | null>(null);
+
+  // Ref-vakten finnes fordi StrictMode kjører effekten dobbelt i dev: to samtidige ensureSetup
+  // kappløper om finn-eller-opprett og den ene taper på duplikat.
+  const started = useRef(false);
+  useEffect(() => {
+    if (started.current) return;
+    started.current = true;
+    ensureSetup(SPEC, setSetupStep)
+      .then((ready) => {
+        setSetup(ready);
+        // Innbyggerflatas katalog rigges etterpå, i rekkefølge, så de to ikke kappløper om «Inntektsbekreftelse».
+        return ensureVeiviser(CREDENTIALS, VEIVISER_RULE, setVeiviserStep).then(setVeiviser);
+      })
+      .catch((failure: Error) => setSetupError(failure.message))
+      .finally(() => setVeiviserStep(null));
+  }, []);
 
   return (
     <main className="shell">
       <header>
-        <h1>KS-workshop mot testmiljøet</h1>
+        <p className="muted">
+          {/* Absolutt sti, ikke «#/»: panelet nås både på «#/verktoy» og på den gamle stien
+              «/debug», og derfra ville «#/» bare gitt «/debug#/» og blitt stående her. */}
+          <a href="/">← Til innbyggerflata (Personlig veiviser)</a>
+        </p>
+        <h1>Verktøy: KS-workshop mot testmiljøet</h1>
         <p className="muted">
           KS-sandkassen fra <code>ks-no/workshop-ai</code> kjører på maskinen din. Plattformen vår kjører i
           testmiljøet, og appen kaller den slik en kunde gjør: med en integrasjonsklient og et token. Ingen
-          rigg, ingen portflytting — kjør reisen, se den virke, kopier mønsteret.
+          rigg, ingen portflytting - kjør reisen, se den virke, kopier mønsteret.
         </p>
       </header>
 
@@ -60,7 +116,7 @@ export default function Debug() {
             <strong>redusert foreldrebetaling</strong>. Deterministisk, som hos dem.
           </li>
           <li>
-            Utstederen vår i testmiljøet pakker svaret som et <strong>bevis i lommeboka hennes</strong> — og
+            Utstederen vår i testmiljøet pakker svaret som et <strong>bevis i lommeboka hennes</strong> - og
             fordi utstederen er nåbar utenfra, kan lommeboka være en ekte app på telefonen.
           </li>
           <li>
@@ -85,12 +141,19 @@ export default function Debug() {
           <SandkassePanel onGrunnlag={setGrunnlag} />
           <UtstedPanel setup={setup} grunnlag={grunnlag} />
           <FremvisPanel setup={setup} />
+          {veiviser ? (
+            <TestbevisPanel veiviser={veiviser} grunnlag={grunnlag} />
+          ) : (
+            <div className="panel">
+              <p className="muted">{veiviserStep ?? "Rigger innbyggerflatas katalog …"}</p>
+            </div>
+          )}
         </>
       )}
 
       <footer className="muted">
         Appen går kundeveien: bare API-er en integrasjonspartner også har. Trenger dere noe som ikke finnes,
-        er det plattformen som skal utvides — ikke denne appen. Se <code>README.md</code>.
+        er det plattformen som skal utvides - ikke denne appen. Se <code>README.md</code>.
       </footer>
     </main>
   );
@@ -193,7 +256,7 @@ function StatusPanel() {
         </tbody>
       </table>
       {platform === null && (
-        <pre className="error">Dev-serveren svarer ikke på /app-api/status — kjører `npm run dev`?</pre>
+        <pre className="error">Dev-serveren svarer ikke på /app-api/status - kjører `npm run dev`?</pre>
       )}
       {fikser.length > 0 && (
         <div className="fix">
@@ -213,7 +276,7 @@ function StatusPanel() {
       <p className="muted">
         Klient-id og hemmelighet bor i <code>.env.local</code> og leses bare av dev-serveren, som henter ett
         token per tjeneste og legger det på hvert kall. Nettleseren ser aldri hemmeligheten. Scopene i
-        «Legitimasjon» er de tokenet faktisk fikk — mangler et, er det registreringen i kontrollflata som
+        «Legitimasjon» er de tokenet faktisk fikk - mangler et, er det registreringen i kontrollflata som
         skal utvides.
         {platform?.clientId && (
           <>
@@ -291,14 +354,14 @@ function SandkassePanel({ onGrunnlag }: { onGrunnlag: (grunnlag: Grunnlag) => vo
         <span className="ordinal">1</span> Sandkassen regner ut retten
       </h2>
       <p className="muted">
-        Går via <code>tools-api</code> på 8083, som ikke krever token — den henter sitt eget Maskinporten-token
+        Går via <code>tools-api</code> på 8083, som ikke krever token - den henter sitt eget Maskinporten-token
         bakover.
       </p>
       <p className="muted">
         <strong>Inntekt er samtykkesperret</strong>, og sperren er ekte: både <code>get_household_income</code> og{" "}
         <code>check_eligibility</code> svarer 403 «Inntektsdata krever registrert samtykke» uten den. Sandkassen
         henger samtykket på en prosessøkt, ikke på personen, så appen starter en økt og svarer{" "}
-        <code>consent_response</code> før den spør om tall — fire kall, i den rekkefølgen.
+        <code>consent_response</code> før den spør om tall - fire kall, i den rekkefølgen.
       </p>
       {personer === null ? (
         <button onClick={() => void hentPersoner()}>Hent testpersoner</button>
@@ -386,12 +449,12 @@ function UtstedPanel({ setup, grunnlag }: { setup: AppSetup; grunnlag: Grunnlag 
         <span className="ordinal">2</span> Utstederen legger svaret i lommeboka
       </h2>
       {!grunnlag ? (
-        <p className="muted">Gjør steg 1 først — beviset fylles med tallene derfra.</p>
+        <p className="muted">Gjør steg 1 først - beviset fylles med tallene derfra.</p>
       ) : (
         <>
           <p className="muted">
             Bevistypen «{SPEC.credentialTypeName}» fra utstederen «{setup.issuerName}» for {grunnlag.person.navn},
-            utstedt forhåndsautorisert. Skann med lommeboka på telefonen — tilbudet peker på testmiljøet, som er
+            utstedt forhåndsautorisert. Skann med lommeboka på telefonen - tilbudet peker på testmiljøet, som er
             nåbart utenfra.
           </p>
           <button onClick={() => void utsted()}>Utsted til lommebok</button>
@@ -411,8 +474,125 @@ function UtstedPanel({ setup, grunnlag }: { setup: AppSetup; grunnlag: Grunnlag 
   );
 }
 
+type Scan =
+  | { kind: "idle" }
+  | { kind: "waiting"; qr: string; uri: string }
+  | { kind: "verified"; claims: PresentedClaims }
+  | { kind: "rejected"; reason: string }
+  | { kind: "error"; message: string };
+
+/**
+ * QR-koden er for telefonen. Lenka bak den er `openid-credential-offer://…` eller
+ * `openid4vp://…`, og den er verdt å ha i utklippstavla: lim den inn i en lommebok på samme
+ * maskin, i `curl` for å se hva forespørselen faktisk inneholder, eller i en melding til den som
+ * feilsøker sammen med deg.
+ */
+function KopierLenke({ uri, etikett }: { uri: string; etikett: string }) {
+  const [tilstand, setTilstand] = useState<"klar" | "kopiert" | "merket">("klar");
+  const lenke = useRef<HTMLElement>(null);
+
+  const kopier = async () => {
+    try {
+      await navigator.clipboard.writeText(uri);
+      setTilstand("kopiert");
+    } catch {
+      // Utklippstavla krever et sikkert opphav og et fokusert dokument, og kan nektes uansett.
+      // Da merker vi teksten i stedet, så ⌘C/Ctrl+C gjør resten - en blindvei hjelper ingen.
+      const range = document.createRange();
+      if (lenke.current) range.selectNodeContents(lenke.current);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      setTilstand("merket");
+    }
+    window.setTimeout(() => setTilstand("klar"), 2500);
+  };
+
+  return (
+    <div className="kopier">
+      <button className="ghost" onClick={() => void kopier()}>
+        {tilstand === "kopiert" ? "✔ Kopiert" : tilstand === "merket" ? "Merket - trykk ⌘C" : etikett}
+      </button>
+      <code className="mono lenke" ref={lenke}>
+        {uri}
+      </code>
+    </div>
+  );
+}
+
+/**
+ * Én claim-verdi som tekst. `status` er et objekt (`{ status_list: { uri, idx } }`), og et objekt
+ * rett inn i JSX kaster «Objects are not valid as a React child» - som river ned HELE React-treet
+ * og gir en blank side. Alt som ikke er en streng blir derfor JSON her.
+ */
+function somTekst(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return "";
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
+}
+
+function ClaimTabell({ claims }: { claims: PresentedClaims }) {
+  return (
+    <table>
+      <tbody>
+        {Object.entries(claims).map(([key, value]) => (
+          <tr key={key}>
+            <th>{key}</th>
+            <td className="mono">{somTekst(value)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 function FremvisPanel({ setup }: { setup: AppSetup }) {
-  const { scan, start: nyFremvisning } = usePresentation(setup.ruleId);
+  const [scan, setScan] = useState<Scan>({ kind: "idle" });
+  const polling = useRef<number | null>(null);
+
+  const stopPolling = useCallback(() => {
+    if (polling.current !== null) {
+      window.clearInterval(polling.current);
+      polling.current = null;
+    }
+  }, []);
+
+  useEffect(() => stopPolling, [stopPolling]);
+
+  const nyFremvisning = async () => {
+    stopPolling();
+    try {
+      const started = await startPresentation(setup.ruleId);
+      const uri = walletUri(started);
+      setScan({ kind: "waiting", qr: await QRCode.toDataURL(uri, { width: 220, margin: 1 }), uri });
+
+      polling.current = window.setInterval(async () => {
+        try {
+          const phase = await presentationPhase(started.id);
+          if (phase !== "VERIFIED" && phase !== "REJECTED" && phase !== "EXPIRED") return;
+          stopPolling();
+          const result = await presentationResult(started.id);
+          if (result.status === "VERIFIED") {
+            setScan({
+              kind: "verified",
+              claims: result.presentations?.find((outcome) => outcome.claims)?.claims ?? {},
+            });
+          } else {
+            const reason = result.failures
+              ?.map((failure) => [failure.check, failure.detail].filter(Boolean).join(": "))
+              .join("; ");
+            setScan({ kind: "rejected", reason: reason || result.status });
+          }
+        } catch (failure) {
+          stopPolling();
+          setScan({ kind: "error", message: (failure as Error).message });
+        }
+      }, 1500);
+    } catch (failure) {
+      setScan({ kind: "error", message: (failure as Error).message });
+    }
+  };
 
   return (
     <section className="panel">
@@ -421,7 +601,7 @@ function FremvisPanel({ setup }: { setup: AppSetup }) {
       </h2>
       <p className="muted">
         Regelen «{SPEC.rule.name}» hos verifieren «{setup.verifierName}» ber om{" "}
-        {SPEC.rule.requestedClaims.join(", ")} — og aldri <code>beregningsbeloep</code>. Beløpet ligger i
+        {SPEC.rule.requestedClaims.join(", ")} - og aldri <code>beregningsbeloep</code>. Beløpet ligger i
         beviset, men blir ikke utlevert.
       </p>
       <button onClick={() => void nyFremvisning()}>Ny fremvisning</button>
@@ -439,4 +619,127 @@ function FremvisPanel({ setup }: { setup: AppSetup }) {
       {scan.kind === "error" && <pre className="error">{scan.message}</pre>}
     </section>
   );
+}
+
+/**
+ * Det kommunen faktisk fikk. Beviset skiller seg i to, og skillet er verdt å vise fram: claimene
+ * fremvisningsregelen ba om, og protokoll-claimene ethvert SD-JWT VC bærer uansett - utsteder,
+ * bevistype, gyldighet og statuslista beviset kan tilbakekalles gjennom.
+ */
+function Kjennelse({ claims }: { claims: PresentedClaims }) {
+  const kvalifisert = somTekst(claims["kvalifisert"]) === "ja";
+  const bevisets = Object.fromEntries(Object.entries(claims).filter(([key]) => !PROTOCOL_CLAIMS.includes(key)));
+  const protokoll = Object.fromEntries(Object.entries(claims).filter(([key]) => PROTOCOL_CLAIMS.includes(key)));
+
+  return (
+    <>
+      <div className={`verdict ${kvalifisert ? "ok" : "bad"}`}>
+        {kvalifisert ? "✔ Kvalifisert" : "✖ Ikke kvalifisert"} - {somTekst(claims["navn"]) || "(ukjent)"}
+      </div>
+      <ClaimTabell claims={bevisets} />
+      {Object.keys(protokoll).length > 0 && (
+        <details>
+          <summary className="muted">Protokoll-claimene beviset alltid bærer</summary>
+          <ClaimTabell claims={protokoll} />
+        </details>
+      )}
+    </>
+  );
+}
+
+/**
+ * Innbyggerflata (Personlig veiviser) ber om fem bevistyper. Bare Inntektsbekreftelsen kommer fra
+ * KS-sandkassen; de andre finnes ikke noe sted ennå. Dette panelet legger testbevis av alle typene
+ * i lommeboka, med redigerbare claims, så hele reisen kan demoes med en ekte lommebok.
+ */
+function TestbevisPanel({ veiviser, grunnlag }: { veiviser: VeiviserSetup; grunnlag: Grunnlag | null }) {
+  const [valgt, setValgt] = useState<CredentialDefinition>(CREDENTIALS[0]);
+  const [claims, setClaims] = useState<Record<string, string>>(() => ({ ...CREDENTIALS[0].example }));
+  const [qr, setQr] = useState<string | null>(null);
+  const [uri, setUri] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const velg = (queryId: string) => {
+    const definition = CREDENTIALS.find((candidate) => candidate.queryId === queryId) ?? CREDENTIALS[0];
+    setValgt(definition);
+    setQr(null);
+    setUri(null);
+    setClaims(fyllInn(definition, grunnlag));
+  };
+
+  const utsted = async () => {
+    setError(null);
+    setQr(null);
+    try {
+      const issuanceRuleId = veiviser.issuanceRuleByQueryId[valgt.queryId];
+      const offer = await orderCredential(issuanceRuleId, claims);
+      setUri(offer.offerUri);
+      setQr(await QRCode.toDataURL(offer.offerUri, { width: 220, margin: 1 }));
+    } catch (failure) {
+      setError((failure as Error).message);
+    }
+  };
+
+  return (
+    <section className="panel">
+      <h2>
+        <span className="ordinal">4</span> Testbevis til innbyggerflata
+      </h2>
+      <p className="muted">
+        Innbyggerflata bruker regelen «{VEIVISER_RULE}» hos «{veiviser.verifierName}», som ber om alle bevistypene i katalogen som
+        valgfrie. Legg de bevisene du vil demoe i lommeboka her. eID med bosted «Våler» er det som åpner flest
+        tjenester.
+      </p>
+      <label>
+        Bevistype
+        <select value={valgt.queryId} onChange={(event) => velg(event.target.value)}>
+          {CREDENTIALS.map((definition) => (
+            <option key={definition.queryId} value={definition.queryId}>
+              {definition.label} ({definition.studioName})
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="columns">
+        {valgt.claims.map((claim) => (
+          <label key={claim.name}>
+            {claim.name}
+            {claim.mandatory ? "" : " (valgfri)"}
+            <input value={claims[claim.name] ?? ""} onChange={(event) => setClaims({ ...claims, [claim.name]: event.target.value })} />
+          </label>
+        ))}
+      </div>
+      <button onClick={() => void utsted()}>Utsted {valgt.label.toLowerCase()} til lommebok</button>
+      {qr && uri && (
+        <div className="qr">
+          <img src={qr} alt={`QR-kode for ${valgt.label}`} />
+          <p className="muted">
+            Skann med lommeboka, eller <a href={uri}>åpne på samme enhet</a>.
+          </p>
+          <KopierLenke uri={uri} etikett="Kopier tilbudslenka" />
+        </div>
+      )}
+      {error && <pre className="error">{error}</pre>}
+    </section>
+  );
+}
+
+/** Eksempelverdier, med navn fra KS-testpersonen hvis steg 1 er kjørt. */
+function fyllInn(definition: CredentialDefinition, grunnlag: Grunnlag | null): Record<string, string> {
+  const claims = { ...definition.example };
+  if (!grunnlag) return claims;
+  const [fornavn, ...etternavn] = grunnlag.person.navn.split(" ");
+  if (definition.queryId === "pid") {
+    claims.given_name = fornavn ?? claims.given_name;
+    claims.family_name = etternavn.join(" ") || claims.family_name;
+    if (grunnlag.person.kommune) claims.resident_municipality = grunnlag.person.kommune;
+  }
+  if (definition.queryId === "inntektsbekreftelse") {
+    claims.navn = grunnlag.person.navn;
+    claims.ordning = ORDNING;
+    claims.inntektsaar = grunnlag.inntektsaar;
+    claims.kvalifisert = grunnlag.sjekk.godkjent ? "ja" : "nei";
+    claims.beregningsbeloep = grunnlag.beregningsbeloep;
+  }
+  return claims;
 }

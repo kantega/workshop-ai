@@ -1,4 +1,65 @@
-# kantega-bevis — KS-sandkassen lokalt, Kantegas bevisplattform i testmiljøet
+# kantega-bevis - Personlig veiviser for Våler kommune, på Kantegas bevisplattform
+
+To flater i én app:
+
+- **`/` - innbyggerflata «Personlig veiviser».** Innbyggeren skanner én QR-kode med lommeboka,
+  deler de bevisene hun har (alle valgfrie), og får tjenestene i Våler kommune sortert i «kan søke
+  nå», «nesten i mål» og «ikke aktuelt». Hun huker av og søker samlet. Design og innhold følger
+  Figma-fila «Hackathon» (farger og typografi fra valer.kommune.no).
+- **`#/verktoy` - workshop-panelet** for oss som rigger demoen: statuslamper, KS-sandkassens
+  inntektsvurdering, utstedelse til lommebok, fremvisning, og et panel som legger testbevis av alle
+  typene i lommeboka. Den gamle adressen `/debug` går til samme panel.
+
+QR-koden bor i kortet «Skann med lommeboka di» øverst til høyre på forsiden
+([`src/veiviser/Veiviser.tsx`](src/veiviser/Veiviser.tsx)). Kortet starter en fremvisningssesjon
+med én gang oppsettet er klart, tegner koden, poller verifieren, og sender innbyggeren videre til
+tjenestene når bevisene er godkjent. Svarer ikke testmiljøet, sier kortet fra i stedet for å stå
+tomt.
+
+Innbyggerflata bruker **én fremvisningsregel, «Personlig veiviser 2026»** (`VEIVISER_RULE` i
+`src/catalog.ts`), som ber om alle
+bevistypene i [`src/catalog.ts`](src/catalog.ts) (12 stk.) som hvert sitt valgfrie
+`credential_set` (`required: false`). Verifieren godkjenner uansett hvor mange som kom; appen
+leser `presentations[].queryId` og regner. Regelen og bevistypene rigges idempotent i
+organisasjonen din første gang siden lastes.
+
+**Uten plattform:** forsiden virker uansett. QR-kortet sier fra hvis testmiljøet ikke svarer, og
+«Demo: lat som du delte bevis» under det lar deg velge en testperson (Kari, Ola, Emma, Jonas) og
+bevis, og hoppe rett til tjenestene. Bevisene er oppdiktet
+([`src/veiviser/demo-personas.ts`](src/veiviser/demo-personas.ts)), resten av reisen er den samme.
+
+**Demo-oppskrift:** `#/verktoy` → steg 1-2 gir Inntektsbekreftelse fra KS-sandkassen → steg 4
+legger eID (bosted «Våler») i lommeboka → `/` → skann → se tjenestene → søk. Én ekte lommebok på
+telefonen holder; Kantegas iOS-lommebok deler ett bevis per skanning, så «Del flere bevis» på
+tjenestesiden er veien til flere.
+
+Tjenestenes krav i `src/catalog.ts` er tre slags: `req` (må deles), `opt` (brukes hvis delt) og
+`anyOf` (ett av flere holder, hvert med egen betingelse; bostøtte trenger ett bevis på
+boutgiftene). Hvert krav sjekker INNHOLDET i beviset, ikke bare at det er delt: alder, bosted,
+gyldighetsdato, førerkortklasse, og inntektsgrense per ordning (`INNTEKTSGRENSER`, 2025-satser
+som må verifiseres).
+
+**Inntektsbekreftelsen godtas på én måte: den ble laget for akkurat denne ordningen og sier
+«kvalifisert: ja».** Fremvisningen ber ikke om `beregningsbeloep` - beløpet ligger i beviset, men
+kommunen får det ikke, og det gjelder innbyggerflata like fullt som enkeltbevis-reisen. Prisen er
+at én inntektsbekreftelse bare åpner sin egen ordning: de sju andre inntektsgrensede tjenestene
+havner i «nesten i mål» og ber om et bevis for seg. Det er et bevisst valg, ikke en mangel - se
+`incomeBelow` i `src/catalog.ts`.
+
+Vurderingen vises linje for linje på hvert kort, med verdien fra beviset. 25 tjenester, tre «pakker» (`package`)
+som vises samlet og forhåndsavkrysset når to eller flere av dem er klare: barnefamilie, bolig,
+tilrettelegging. Skattemelding, lønnsslipp og NAV-vedtak er med vilje ikke egne bevis: de er
+kildene bak Inntektsbekreftelsen.
+
+Overtar du prosjektet: start med [`OVERLEVERING.md`](OVERLEVERING.md).
+Oversikt over bevisene og claimene deres: [`docs/BEVIS.md`](docs/BEVIS.md).
+
+Koden: `src/catalog.ts` (bevis, tjenester, kvalifiseringsmotor), `src/veiviser/` (sidene),
+`src/api.ts` (`ensureVeiviser`, kundeveien), `src/Verktoy.tsx` (panelet).
+
+---
+
+## Bakgrunn: startpakka
 
 Startpakke for en workshop der du bygger oppå Kantegas eIDAS2-plattform **slik en kunde gjør
 det**: KS' AI-sandkasse ([`ks-no/workshop-ai`](https://github.com/ks-no/workshop-ai)) kjører på
@@ -80,11 +141,15 @@ npm install
 npm run dev
 ```
 
-Åpne <http://localhost:5173>. Øverst står fire lamper. De to KS-lampene skal si «svarer»; de to
-plattformlampene skal si «svarer» **og** «bærer» med scopene tokenet fikk. Panelet viser
-kommandoen som fikser det som mangler. Deretter, tre paneler nedover: «Hent testpersoner» →
-velg en (`person-001` Maja Solberg er et trygt valg) → «Gi samtykke og hent inntekt» → «Utsted
-til lommebok» → «Ny fremvisning».
+Åpne <http://localhost:5173>. Der møter du innbyggerflata: QR-kortet «Skann med lommeboka di»
+starter en fremvisning av seg selv så snart oppsettet er ferdig.
+
+Rigger du demoen, gå til <http://localhost:5173/#/verktoy> (eller den gamle adressen `/debug`).
+Øverst står fire lamper. De to KS-lampene skal si «svarer»; de to plattformlampene skal si
+«svarer» **og** «bærer» med scopene tokenet fikk. Panelet viser kommandoen som fikser det som
+mangler. Deretter, fire paneler nedover: «Hent testpersoner» → velg en (`person-001` Maja Solberg
+er et trygt valg) → «Gi samtykke og hent inntekt» → «Utsted til lommebok» → «Ny fremvisning», og
+til slutt testbevis-panelet som legger alle 12 typene i lommeboka.
 
 ## Slik virker legitimasjonen
 
@@ -155,20 +220,22 @@ har lest forespørselen og funnet **ingenting å vise fram**. Fremvisningsregele
 den rekkefølgen de er sannsynlige:
 
 1. **Ingenting er utstedt til den telefonen ennå.** Forsiden (`/`) starter en fremvisning av seg
-   selv så snart oppsettet er ferdig, og har ingen utstedelse. Beviset lages på `/debug`: «Hent
-   testpersoner» → «Gi samtykke og hent inntekt» → **«Utsted til lommebok»** (skann den QR-en
-   først) → «Ny fremvisning».
+   selv så snart oppsettet er ferdig, og har ingen utstedelse. Beviset lages i verktøypanelet
+   (`#/verktoy`, eller `/debug`): «Hent testpersoner» → «Gi samtykke og hent inntekt» →
+   **«Utsted til lommebok»** (skann den QR-en først) → «Ny fremvisning». Vil du ha alle 12
+   bevistypene i lommeboka på én gang, bruk testbevis-panelet nederst.
 2. **Regelen peker på et gammelt bevis.** Regler gjenbrukes på navn; bytter du bevistype, utsteder
-   eller claim-liste, spør den gamle regelen fortsatt etter den gamle `vct`-en. `ensureSetup`
-   oppdager nå avviket og skriver regelen på nytt — går ikke det, sier feilmeldingen hvilke to
-   `vct`-er som ikke stemmer og hva du skal gjøre.
+   eller claim-liste, spør den gamle regelen fortsatt etter den gamle `vct`-en. `reconcileRule` i
+   `src/api.ts` oppdager avviket og skriver regelen på nytt - går ikke det, sier feilmeldingen
+   hvilke `vct`-er som ikke stemmer og hva du skal gjøre. Det gjelder begge riggene: `ensureSetup`
+   (ett bevis, verktøypanelet) og `ensureVeiviser` (hele katalogen, innbyggerflata).
 3. **Lommeboka forstår ikke DCQL.** `mdoc-presentasjon feilet` i meldingen er den gamle
    ISO-18013/Presentation-Exchange-veien. En lommebok som er eldre enn OID4VP 1.0 leter etter
    `presentation_definition`, finner bare `dcql_query`, og ender på null dokumenter. Det er
    lommeboka som må oppdateres; appen kan ikke gjøre noe med det.
 
-Skille 1 og 2 fra 3: hent forespørselen lommeboka faktisk får (bruk «Kopier forespørselen» på
-`/debug` — `request_uri` er en engangshemmelighet, så start en fersk fremvisning først):
+Skille 1 og 2 fra 3: hent forespørselen lommeboka faktisk får (bruk «Kopier forespørselen» i
+verktøypanelet - `request_uri` er en engangshemmelighet, så start en fersk fremvisning først):
 
 ```bash
 curl -s "<request_uri>" | cut -d. -f2 | base64 -d 2>/dev/null | jq
@@ -190,18 +257,30 @@ KS-siden (`src/ks.ts`) er kjørt mot en levende sandkasse: `person-001` gir innt
 
 **Ikke verifisert:** DigDirs demolommebok — se «Lommebok» over. Bruk vår.
 
+**Ikke verifisert: innbyggerflata mot testmiljøet.** Veiviseren er typesjekket og bygget, og
+demo-lommeboka tar hele reisen fra forsiden til kvittering uten plattform. Men ingen har kjørt
+`ensureVeiviser` med gyldig `.env.local`, så første kjøring er den som ser om alle 12 bevistypene
+rigges, og om verifieren i testmiljøet er ny nok til å svare med `queryId` per bevis. Er den ikke
+det, kjenner appen beviset igjen på `vct` i stedet
+([`src/veiviser/presentation.ts`](src/veiviser/presentation.ts)). Se
+[`OVERLEVERING.md`](OVERLEVERING.md) for resten av forbeholdene.
+
 ## Bygg videre med Claude Code
 
-Denne appen er ett bevis og én reise. Din er en annen, og veien dit er å kopiere mønsteret. Bytt ut
-det som står i vinkelparenteser:
+Denne appen er én kommune og ett sett regler. Din er et annet, og veien dit er å kopiere
+mønsteret. Bytt ut det som står i vinkelparenteser:
 
 ```text
 Jeg er på KS-hackathon og skal bygge videre på appen i examples/kantega-bevis.
 
 Les disse først, i denne rekkefølgen:
 - examples/kantega-bevis/README.md — hvordan appen henger sammen
-- examples/kantega-bevis/src/api.ts — ALLE kallene mot plattformen, og ensureSetup()
-- examples/kantega-bevis/src/App.tsx — reisen: sandkasse → utstedelse → fremvisning
+- examples/kantega-bevis/src/api.ts — ALLE kallene mot plattformen, ensureSetup()
+  og ensureVeiviser()
+- examples/kantega-bevis/src/catalog.ts — bevisene, tjenestene og reglene
+- examples/kantega-bevis/src/veiviser/Veiviser.tsx — forsiden, og QR-kortet
+- examples/kantega-bevis/src/Verktoy.tsx — riggeverktøyet: sandkasse →
+  utstedelse → fremvisning
 - examples/kantega-bevis/server/platform-auth.ts — token per tjeneste
 
 Oppgaven: <hva appen skal gjøre, i to–tre setninger>
@@ -214,13 +293,13 @@ Regler:
 - Kopier mønsteret i src/api.ts. Alt går kundeveien: bare API-er en
   integrasjonspartner også har. Trenger du noe som ikke finnes, si fra —
   ikke finn på et endepunkt.
-- ensureSetup() er finn-eller-opprett og må forbli idempotent. Den kjøres på
-  hver sidelast.
+- ensureSetup() og ensureVeiviser() er finn-eller-opprett og må forbli
+  idempotente. De kjøres på hver sidelast.
 - Ikke rør server/platform-auth.ts, og ikke flytt klient-id eller hemmelighet
   inn i nettleseren. Hemmeligheten er nok til å opptre som organisasjonen min.
 - Claims fra en fremvisning er VILKÅRLIG JSON, ikke strenger: beviset bærer
   alltid iss, vct, iat, exp og status ved siden av sine egne, og status er et
-  nøstet objekt. Bruk PresentedClaims og somTekst() slik App.tsx gjør.
+  nøstet objekt. Bruk PresentedClaims og claimText() slik catalog.ts gjør.
 - Norsk i UI og kommentarer, engelsk i identifikatorer.
 
 Verifiser før du sier deg ferdig: npx tsc --noEmit skal være ren, og du skal ha

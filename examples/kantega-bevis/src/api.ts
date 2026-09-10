@@ -59,46 +59,99 @@ interface Row {
   [key: string]: unknown;
 }
 
-/** Spørringen fremvisningsregelen bærer. DCQL (OID4VP 1.0) — bare den biten appen faktisk setter. */
-interface DcqlQuery {
+interface CertificateRow extends Row {
+  status?: string;
+  verifierId?: string;
+}
+
+/**
+ * Spørringen fremvisningsregelen bærer. DCQL (OID4VP 1.0) — bare den biten appen faktisk setter.
+ * `credential_sets` er hvordan veiviseren gjør hvert bevis valgfritt: ett sett per bevis, alle med
+ * `required: false`, så verifieren godkjenner uansett hvor mange lommeboka faktisk delte.
+ */
+export interface DcqlQuery {
   credentials: {
     id: string;
     format: string;
     meta: { vct_values: string[] };
     claims: { path: string[] }[];
   }[];
+  credential_sets?: { options: string[][]; required: boolean }[];
 }
 
-/** Hva appen ber om NÅ: bevistypen slik den er publisert, og claimene spec-en lister. */
-function presentationQuery(spec: AppSpec, vct: string): DcqlQuery {
-  return {
-    credentials: [
-      {
-        id: spec.rule.queryId,
-        format: "dc+sd-jwt",
-        meta: { vct_values: [vct] },
-        claims: spec.rule.requestedClaims.map((claim) => ({ path: [claim] })),
-      },
-    ],
-  };
+interface NormalisedQuery {
+  credentials: { id: string; format: string; vcts: string[]; claims: string[] }[];
+  sets: { options: string[][]; required: boolean }[];
 }
 
 /**
- * Sammenligner bare det appen selv setter: format, hvilke vct-er som godtas, og claim-stiene.
- * Plattformen kan normalisere og fylle på med felt vi aldri sendte, og en rå JSON-sammenligning
- * ville da meldt avvik på hver eneste last og skrevet regelen på nytt uten grunn.
+ * Kanonisk form av det appen selv setter: hvilke bevis regelen spør om, hvilke vct-er de godtar,
+ * claim-stiene, og hvordan settene er merket valgfrie. Plattformen kan normalisere og fylle på med
+ * felt vi aldri sendte, og en rå JSON-sammenligning ville da meldt avvik på hver eneste last og
+ * skrevet regelen på nytt uten grunn.
+ *
+ * REKKEFØLGE BETYR INGENTING, hverken på bevisene eller på settene. En DCQL-spørring er mengder,
+ * ikke lister: `credential_sets` sier hvilke kombinasjoner som holder, ikke i hvilken orden de
+ * skal leses. Sorterte vi bare bevisene, ville en katalog som flyttet ett bevis oppover meldt
+ * avvik på tolv identiske bevistyper - og appen ville skrevet regelen på nytt uten at noe hadde
+ * endret seg. Derfor sorteres begge nivåene her.
  */
+function normalise(query: DcqlQuery): NormalisedQuery {
+  return {
+    credentials: [...(query.credentials ?? [])]
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((credential) => ({
+        id: credential.id,
+        format: credential.format,
+        vcts: [...(credential.meta?.vct_values ?? [])].sort(),
+        claims: (credential.claims ?? []).map((claim) => claim.path.join(".")).sort(),
+      })),
+    sets: (query.credential_sets ?? [])
+      .map((set) => ({
+        options: (set.options ?? []).map((option) => [...option].sort()).sort((a, b) => a.join().localeCompare(b.join())),
+        required: set.required,
+      }))
+      .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+  };
+}
+
 function sameQuery(current: DcqlQuery, want: DcqlQuery): boolean {
-  const mine = current.credentials?.[0];
-  const theirs = want.credentials[0];
-  if (!mine) return false;
-  const paths = (credential: DcqlQuery["credentials"][number]) =>
-    (credential.claims ?? [])
-      .map((claim) => claim.path.join("."))
-      .sort()
-      .join(",");
-  const vcts = (credential: DcqlQuery["credentials"][number]) => [...(credential.meta?.vct_values ?? [])].sort().join(",");
-  return mine.format === theirs.format && vcts(mine) === vcts(theirs) && paths(mine) === paths(theirs);
+  return JSON.stringify(normalise(current)) === JSON.stringify(normalise(want));
+}
+
+/**
+ * Hva som faktisk skiller regelen fra det appen vil ha. To lister med tolv URL-er hver er ingen
+ * feilmelding noen kan handle på - forskjellen er det, og den er som regel ett bevis eller én claim.
+ */
+function describeDifference(current: DcqlQuery, want: DcqlQuery): string {
+  const stored = normalise(current);
+  const wanted = normalise(want);
+  const forskjeller: string[] = [];
+
+  const storedIds = new Set(stored.credentials.map((credential) => credential.id));
+  const wantedIds = new Set(wanted.credentials.map((credential) => credential.id));
+  const bareIRegelen = [...storedIds].filter((id) => !wantedIds.has(id));
+  const bareIAppen = [...wantedIds].filter((id) => !storedIds.has(id));
+  if (bareIRegelen.length > 0) forskjeller.push(`regelen spør om bevis appen ikke har: ${bareIRegelen.join(", ")}`);
+  if (bareIAppen.length > 0) forskjeller.push(`appen har bevis regelen ikke spør om: ${bareIAppen.join(", ")}`);
+
+  for (const credential of wanted.credentials) {
+    const motpart = stored.credentials.find((candidate) => candidate.id === credential.id);
+    if (!motpart) continue;
+    if (motpart.vcts.join() !== credential.vcts.join()) {
+      forskjeller.push(`«${credential.id}» peker på ${motpart.vcts.join(", ") || "(ingenting)"}, appen på ${credential.vcts.join(", ")}`);
+    } else if (motpart.claims.join() !== credential.claims.join()) {
+      forskjeller.push(`«${credential.id}» ber om ${motpart.claims.join(", ") || "(ingen claims)"}, appen om ${credential.claims.join(", ")}`);
+    }
+  }
+
+  if (JSON.stringify(stored.sets) !== JSON.stringify(wanted.sets)) {
+    forskjeller.push(
+      `settene er ulike (regelen har ${stored.sets.length}, appen ${wanted.sets.length}) - det er de som gjør hvert bevis valgfritt`,
+    );
+  }
+
+  return forskjeller.length > 0 ? forskjeller.join("; ") : "spørringene ser like ut, så dette er trolig en feil i sammenligningen";
 }
 
 /**
@@ -143,16 +196,128 @@ async function reconcileRule(
       body: JSON.stringify({ verifierId, name, query: want }),
     });
   } catch (failure) {
-    const had = current.credentials?.[0]?.meta?.vct_values?.join(", ") ?? "(ukjent)";
+    // «not-in-access-plan» er ikke et manglende scope: abonnementet tillater ikke å ENDRE en regel
+    // i det hele tatt. Da hjelper det ikke å prøve igjen, og råd om scopes sender folk feil vei.
+    const utenforPlanen = failure instanceof PlatformError && failure.status === 403 && failure.body.includes("not-in-access-plan");
     throw new Error(
-      `Fremvisningsregelen «${name}» finnes fra før, men spør etter et annet bevis enn det appen nå ` +
-        `utsteder (regelen: ${had} — appen: ${want.credentials[0].meta.vct_values.join(", ")}). Lommeboka ` +
-        "finner da ingenting å vise fram og svarer «request_data_no_document». Regelen kunne ikke " +
-        `oppdateres automatisk (${(failure as Error).message}) — slett den under Verifiere → ` +
-        "Fremvisningsregler i kontrollflata, eller gi den et nytt navn i src/spec.ts, og last siden på nytt.",
+      `Fremvisningsregelen «${name}» finnes fra før, men spør etter noe annet enn appen: ` +
+        `${describeDifference(current, want)}. Lommeboka finner da ingenting å vise fram og svarer ` +
+        "«request_data_no_document». Regelen kunne ikke oppdateres automatisk " +
+        `(${(failure as Error).message}). ` +
+        (utenforPlanen
+          ? "Abonnementet ditt tillater ikke å endre en fremvisningsregel, bare å opprette den, så " +
+            "omskriving er ingen vei videre: "
+          : "") +
+        "Slett regelen under Verifiere → Fremvisningsregler i kontrollflata, eller gi den et nytt " +
+        "navn (VEIVISER_RULE i src/catalog.ts for innbyggerflata, SPEC.rule.name i src/Verktoy.tsx " +
+        "for verktøypanelet), og last siden på nytt.",
     );
   }
   return existing.id;
+}
+
+/** Finn regelen på navn, og opprett den hvis den mangler. Retter den opp hvis den har flyttet seg. */
+async function ensureRule(
+  verifierRow: Row,
+  name: string,
+  query: DcqlQuery,
+  onStep: (step: string) => void,
+): Promise<string> {
+  onStep(`Fremvisningsregelen «${name}» …`);
+  const rules = await call<Row[]>(studio("/v1/verification-rules"));
+  const existing = rules.find((rule) => rule.name === name);
+  if (existing) return reconcileRule(existing, verifierRow.id, name, query, onStep);
+  const created = await call<Row>(studio("/v1/verification-rules"), {
+    method: "POST",
+    body: JSON.stringify({ verifierId: verifierRow.id, name, query }),
+  });
+  return created.id;
+}
+
+async function ensureIssuer(): Promise<Row> {
+  const issuers = await call<Row[]>(studio("/v1/issuers"));
+  if (issuers.length === 0) {
+    throw new Error(
+      "Organisasjonen har ingen utsteder i testmiljøet. Opprett en i kontrollflata (Utstedere), eller " +
+        "sjekk at klienten er registrert i riktig organisasjon.",
+    );
+  }
+  return issuers[0];
+}
+
+async function ensureIssuerCertificate(issuer: Row): Promise<void> {
+  // Uten et aktivt sertifikat ser alt riktig ut helt til lommeboka: utstederen svarer da
+  // «unsupported_credential_type: Utstederen har ikke et aktivt sertifikat» når beviset skal signeres.
+  const certificates = await call<CertificateRow[]>(studio(`/v1/issuers/${issuer.id}/certificates`));
+  if (certificates.some((certificate) => certificate.status === "ACTIVE")) return;
+  try {
+    await call(studio(`/v1/issuers/${issuer.id}/certificates/platform-default`), { method: "POST" });
+  } catch (failure) {
+    throw new Error(
+      "Utstederen mangler et aktivt sertifikat, og Kantega-sertifikatet kunne ikke adopteres " +
+        `(${(failure as Error).message}). Prøv knappen «Bruk Kantega-sertifikatet» under Utstedere → ` +
+        "Sertifikater i kontrollflata, og last siden på nytt.",
+    );
+  }
+}
+
+/** Finn eller opprett bevistype + forhåndsautorisert utstedelsesregel, og publiser. Idempotent. */
+async function ensureCredentialType(
+  issuer: Row,
+  name: string,
+  claims: ClaimSpec[],
+  onStep: (step: string) => void,
+): Promise<{ issuanceRuleId: string; vct: string }> {
+  onStep(`Bevistypen «${name}» …`);
+  const credentialTypes = await call<Row[]>(studio("/v1/credential-types"));
+  const credentialTypeId =
+    credentialTypes.find((type) => type.name === name)?.id ??
+    (await call<Row>(studio("/v1/credential-types"), { method: "POST", body: JSON.stringify({ name, claims }) })).id;
+
+  const issuanceRules = await call<Row[]>(studio("/v1/issuance-rules"));
+  const issuanceRuleId =
+    issuanceRules.find((rule) => rule.credentialTypeId === credentialTypeId)?.id ??
+    (
+      await call<Row>(studio("/v1/issuance-rules"), {
+        method: "POST",
+        body: JSON.stringify({
+          issuerId: issuer.id,
+          credentialTypeId,
+          name: `${name}, forhåndsautorisert`,
+          method: "PRE_AUTHORIZED_CODE",
+        }),
+      })
+    ).id;
+
+  const deployment = await call<{ deployed: { vct: string } }>(
+    studio(`/v1/issuance-rules/${issuanceRuleId}/deployment`),
+    { method: "PUT" },
+  );
+  return { issuanceRuleId, vct: deployment.deployed.vct };
+}
+
+async function ensureVerifier(onStep: (step: string) => void): Promise<Row> {
+  onStep("Finner verifieren …");
+  const verifiers = await call<Row[]>(studio("/v1/verifiers"));
+  if (verifiers.length === 0) {
+    throw new Error("Organisasjonen har ingen verifier i testmiljøet. Opprett en i kontrollflata (Verifiere).");
+  }
+  const verifierRow = verifiers[0];
+
+  onStep("Sjekker tilgangssertifikatet …");
+  const certificates = await call<CertificateRow[]>(studio("/v1/access-certificates"));
+  if (!certificates.some((certificate) => certificate.verifierId === verifierRow.id && certificate.status === "ACTIVE")) {
+    try {
+      await call(studio(`/v1/verifiers/${verifierRow.id}/access-certificates/platform-default`), { method: "POST" });
+    } catch (failure) {
+      throw new Error(
+        "Verifieren mangler et aktivt tilgangssertifikat, og plattformens standardsertifikat kunne ikke " +
+          `adopteres (${(failure as Error).message}). Legg inn et i kontrollflata under Verifiere → ` +
+          "Tilgangssertifikater, og last siden på nytt.",
+      );
+    }
+  }
+  return verifierRow;
 }
 
 /**
@@ -165,103 +330,89 @@ async function reconcileRule(
  */
 export async function ensureSetup(spec: AppSpec, onStep: (step: string) => void): Promise<AppSetup> {
   onStep("Finner utstederen …");
-  const issuers = await call<Row[]>(studio("/v1/issuers"));
-  if (issuers.length === 0) {
-    throw new Error(
-      "Organisasjonen har ingen utsteder i testmiljøet. Opprett en i kontrollflata (Utstedere), eller " +
-        "sjekk at klienten er registrert i riktig organisasjon.",
-    );
-  }
-  const issuer = issuers[0];
-
-  onStep(`Bevistypen «${spec.credentialTypeName}» …`);
-  const credentialTypes = await call<Row[]>(studio("/v1/credential-types"));
-  const credentialTypeId =
-    credentialTypes.find((type) => type.name === spec.credentialTypeName)?.id ??
-    (
-      await call<Row>(studio("/v1/credential-types"), {
-        method: "POST",
-        body: JSON.stringify({ name: spec.credentialTypeName, claims: spec.claims }),
-      })
-    ).id;
-
-  onStep("Utstedelsesregelen …");
-  const issuanceRules = await call<Row[]>(studio("/v1/issuance-rules"));
-  const issuanceRuleId =
-    issuanceRules.find((rule) => rule.credentialTypeId === credentialTypeId)?.id ??
-    (
-      await call<Row>(studio("/v1/issuance-rules"), {
-        method: "POST",
-        body: JSON.stringify({
-          issuerId: issuer.id,
-          credentialTypeId,
-          name: `${spec.credentialTypeName}, forhåndsautorisert`,
-          method: "PRE_AUTHORIZED_CODE",
-        }),
-      })
-    ).id;
-
+  const issuer = await ensureIssuer();
+  const { issuanceRuleId, vct } = await ensureCredentialType(issuer, spec.credentialTypeName, spec.claims, onStep);
   onStep("Sjekker utstederens sertifikat …");
-  // Uten et aktivt sertifikat ser alt riktig ut helt til lommeboka: utstederen svarer da
-  // «unsupported_credential_type: Utstederen har ikke et aktivt sertifikat» når beviset skal signeres.
-  const issuerCertificates = await call<Row[]>(studio(`/v1/issuers/${issuer.id}/certificates`));
-  if (!issuerCertificates.some((certificate) => certificate.status === "ACTIVE")) {
-    try {
-      await call(studio(`/v1/issuers/${issuer.id}/certificates/platform-default`), { method: "POST" });
-    } catch (failure) {
-      throw new Error(
-        "Utstederen mangler et aktivt sertifikat, og Kantega-sertifikatet kunne ikke adopteres " +
-          `(${(failure as Error).message}). Prøv knappen «Bruk Kantega-sertifikatet» under Utstedere → ` +
-          "Sertifikater i kontrollflata, og last siden på nytt.",
-      );
-    }
-  }
-
-  onStep("Publiserer bevistypen til utstederen …");
-  const deployment = await call<{ deployed: { vct: string } }>(
-    studio(`/v1/issuance-rules/${issuanceRuleId}/deployment`),
-    { method: "PUT" },
+  await ensureIssuerCertificate(issuer);
+  const verifierRow = await ensureVerifier(onStep);
+  const ruleId = await ensureRule(
+    verifierRow,
+    spec.rule.name,
+    {
+      credentials: [
+        {
+          id: spec.rule.queryId,
+          format: "dc+sd-jwt",
+          meta: { vct_values: [vct] },
+          claims: spec.rule.requestedClaims.map((claim) => ({ path: [claim] })),
+        },
+      ],
+    },
+    onStep,
   );
-  const vct = deployment.deployed.vct;
-
-  onStep("Finner verifieren …");
-  const verifiers = await call<Row[]>(studio("/v1/verifiers"));
-  if (verifiers.length === 0) {
-    throw new Error("Organisasjonen har ingen verifier i testmiljøet. Opprett en i kontrollflata (Verifiere).");
-  }
-  const verifierRow = verifiers[0];
-
-  onStep("Sjekker tilgangssertifikatet …");
-  const certificates = await call<Row[]>(studio("/v1/access-certificates"));
-  if (!certificates.some((certificate) => certificate.verifierId === verifierRow.id && certificate.status === "ACTIVE")) {
-    try {
-      await call(studio(`/v1/verifiers/${verifierRow.id}/access-certificates/platform-default`), { method: "POST" });
-    } catch (failure) {
-      throw new Error(
-        "Verifieren mangler et aktivt tilgangssertifikat, og plattformens standardsertifikat kunne ikke " +
-          `adopteres (${(failure as Error).message}). Legg inn et i kontrollflata under Verifiere → ` +
-          "Tilgangssertifikater, og last siden på nytt.",
-      );
-    }
-  }
-
-  onStep(`Fremvisningsregelen «${spec.rule.name}» …`);
-  const query = presentationQuery(spec, vct);
-  const rules = await call<Row[]>(studio("/v1/verification-rules"));
-  const existing = rules.find((rule) => rule.name === spec.rule.name);
-  const ruleId = existing
-    ? await reconcileRule(existing, verifierRow.id, spec.rule.name, query, onStep)
-    : (
-        await call<Row>(studio("/v1/verification-rules"), {
-          method: "POST",
-          body: JSON.stringify({ verifierId: verifierRow.id, name: spec.rule.name, query }),
-        })
-      ).id;
 
   return {
     issuanceRuleId,
     ruleId,
     vct,
+    issuerName: issuer.name ?? issuer.id,
+    verifierName: verifierRow.name ?? verifierRow.id,
+  };
+}
+
+/** Én bevistype i veiviserens katalog, slik plattformen trenger den. */
+export interface CatalogEntry {
+  queryId: string;
+  studioName: string;
+  claims: ClaimSpec[];
+  requestedClaims: string[];
+}
+
+export interface VeiviserSetup {
+  ruleId: string;
+  /** vct per queryId — brukes til å kjenne igjen bevis i svaret når `queryId` mangler. */
+  vctByQueryId: Record<string, string>;
+  issuanceRuleByQueryId: Record<string, string>;
+  issuerName: string;
+  verifierName: string;
+}
+
+/**
+ * Veiviserens rigg: alle katalogbevisene som bevistyper, og ÉN fremvisningsregel som ber om dem
+ * som hvert sitt valgfrie `credential_set` (`required: false`). Innbyggeren deler det hun har;
+ * verifieren godkjenner uansett hvor mange som kom; appen leser `presentations[].queryId`.
+ */
+export async function ensureVeiviser(
+  catalog: readonly CatalogEntry[],
+  ruleName: string,
+  onStep: (step: string) => void,
+): Promise<VeiviserSetup> {
+  onStep("Finner utstederen …");
+  const issuer = await ensureIssuer();
+  const vctByQueryId: Record<string, string> = {};
+  const issuanceRuleByQueryId: Record<string, string> = {};
+  for (const entry of catalog) {
+    const { issuanceRuleId, vct } = await ensureCredentialType(issuer, entry.studioName, entry.claims, onStep);
+    vctByQueryId[entry.queryId] = vct;
+    issuanceRuleByQueryId[entry.queryId] = issuanceRuleId;
+  }
+  onStep("Sjekker utstederens sertifikat …");
+  await ensureIssuerCertificate(issuer);
+  const verifierRow = await ensureVerifier(onStep);
+  const query: DcqlQuery = {
+    credentials: catalog.map((entry) => ({
+      id: entry.queryId,
+      format: "dc+sd-jwt",
+      meta: { vct_values: [vctByQueryId[entry.queryId]] },
+      claims: entry.requestedClaims.map((claim) => ({ path: [claim] })),
+    })),
+    credential_sets: catalog.map((entry) => ({ options: [[entry.queryId]], required: false })),
+  };
+  const ruleId = await ensureRule(verifierRow, ruleName, query, onStep);
+  return {
+    ruleId,
+    vctByQueryId,
+    issuanceRuleByQueryId,
     issuerName: issuer.name ?? issuer.id,
     verifierName: verifierRow.name ?? verifierRow.id,
   };
@@ -313,10 +464,20 @@ export type PresentedClaims = Record<string, unknown>;
 /** Claimene ETHVERT SD-JWT VC bærer, uansett bevistype. Ikke det beviset handler om. */
 export const PROTOCOL_CLAIMS = ["iss", "vct", "iat", "exp", "nbf", "status", "cnf"];
 
+/** Ett fremvist bevis. `queryId` peker på DCQL-queryen det svarte på. */
+export interface PresentationOutcome {
+  queryId?: string | null;
+  format?: string;
+  credentialType?: string | null;
+  issuer?: string | null;
+  claims: PresentedClaims;
+}
+
 export interface PresentationResult {
   status: "VERIFIED" | "REJECTED" | "EXPIRED";
-  presentations?: { claims: PresentedClaims }[] | null;
-  failures?: { check?: string | null; detail?: string | null }[];
+  /** `null` (ikke tom) når verifieren ikke lagrer innhold (OUTCOME_ONLY). */
+  presentations?: PresentationOutcome[] | null;
+  failures?: { queryId?: string | null; check?: string | null; detail?: string | null }[];
 }
 
 export async function presentationResult(sessionId: string): Promise<PresentationResult> {
