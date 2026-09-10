@@ -144,6 +144,34 @@ hemmeligheten er rotert. Endepunktet sier ikke hvilken, med vilje.
 **«Fikk ikke rigget opp plattformen»** — se statuspanelet: bærer tokenet, og har det scopene?
 Sier meldingen at organisasjonen mangler utsteder eller verifier, opprett dem i kontrollflata.
 
+**Lommeboka svarer `request_data_no_document`** — feilen kommer fra lommeboka, ikke fra appen: den
+har lest forespørselen og funnet **ingenting å vise fram**. Fremvisningsregelen låser beviset til
+én `vct` (`meta.vct_values`), så lommeboka tilbyr bare et bevis med nøyaktig den. Tre grunner, i
+den rekkefølgen de er sannsynlige:
+
+1. **Ingenting er utstedt til den telefonen ennå.** Forsiden (`/`) starter en fremvisning av seg
+   selv så snart oppsettet er ferdig, og har ingen utstedelse. Beviset lages på `/debug`: «Hent
+   testpersoner» → «Gi samtykke og hent inntekt» → **«Utsted til lommebok»** (skann den QR-en
+   først) → «Ny fremvisning».
+2. **Regelen peker på et gammelt bevis.** Regler gjenbrukes på navn; bytter du bevistype, utsteder
+   eller claim-liste, spør den gamle regelen fortsatt etter den gamle `vct`-en. `ensureSetup`
+   oppdager nå avviket og skriver regelen på nytt — går ikke det, sier feilmeldingen hvilke to
+   `vct`-er som ikke stemmer og hva du skal gjøre.
+3. **Lommeboka forstår ikke DCQL.** `mdoc-presentasjon feilet` i meldingen er den gamle
+   ISO-18013/Presentation-Exchange-veien. En lommebok som er eldre enn OID4VP 1.0 leter etter
+   `presentation_definition`, finner bare `dcql_query`, og ender på null dokumenter. Det er
+   lommeboka som må oppdateres; appen kan ikke gjøre noe med det.
+
+Skille 1 og 2 fra 3: hent forespørselen lommeboka faktisk får (bruk «Kopier forespørselen» på
+`/debug` — `request_uri` er en engangshemmelighet, så start en fersk fremvisning først):
+
+```bash
+curl -s "<request_uri>" | cut -d. -f2 | base64 -d 2>/dev/null | jq
+```
+
+Står det `dcql_query` og ingen `presentation_definition`, er forespørselen riktig og feilen ligger
+i punkt 1 eller 3.
+
 ## Hva som er verifisert, og hva som ikke er det
 
 **Verifisert 2026-09-09, uten legitimasjon:** testmiljøets metadatadokument, helsesjekker på

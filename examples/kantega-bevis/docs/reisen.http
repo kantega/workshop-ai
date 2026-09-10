@@ -1,0 +1,402 @@
+### HACKATHON-REISEN — hele kundeveien i én fil, steg for steg.
+#
+# Kjør stegene OVENFRA og NED. Hvert steg fanger id-ene det neste trenger (client.global.set),
+# så du limer aldri inn en UUID for hånd. Miljø velges i http-client.env.json ved siden av
+# («local» = riggen fra ./gradlew dev). Les README.md i samme mappe først — den sier hva som
+# faktisk sjekkes lokalt og hva som ikke gjør det.
+#
+#   0  Adressene våre               GET  /.well-known/oauth-authorization-server
+#   1  Integrasjonsklienten         (kontrollflata i test; POST /v1/integration-clients lokalt)
+#   2  Token, hvem er jeg, SERTIFIKATER  POST /oauth/token, GET /v1/issuers|verifiers,
+#                                   POST …/certificates/platform-default  ← uten dem stopper 7 og 8
+#   3  Bevismal                     POST /v1/credential-types
+#   4  Utstedelsesregel             POST /v1/issuance-rules
+#   5  Publiser til utstederen      PUT  /v1/issuance-rules/{id}/deployment   ← obligatorisk
+#   6  Verifiseringsregel           POST /v1/verification-rules         (DCQL, selektiv fremvisning)
+#   7  Bestill en utstedelse        POST /v1/issuance-rules/{id}/test-issuances → QR-lenke
+#   8  Start en verifisering        POST /v1/presentation-sessions (verifieren) → QR-lenke
+#      … lommeboka svarer på begge QR-ene (README § «Lommeboka») …
+#   9  Se status                    GET  test-issuances/{offerId}, presentation-sessions/{id}/result,
+#                                   GET  /v1/credentials, POST /v1/credentials/search
+#  10  Revoker                      POST /v1/credentials/{id}/revoke → ny fremvisning feiler på REVOCATION
+#
+# Konvensjon: Authorization: Bearer settes på hvert kall slik det skal i test/prod. Den lokale riggen
+# kjører dev-unauthenticated og IGNORERER headeren (kalleren er alltid demoorganisasjonen).
+# LOKALT SVARER TOKEN-ENDEPUNKTET invalid_client PÅ ALT — med vilje (StudioWiring: token-endepunktet
+# finnes bare i studio.auth.mode=token). Steg 2 fanger det opp og setter et plassholder-token, så
+# resten av fila kjører uansett. Ekte token får du først mot testmiljøet (README § «Det du må vite»).
+
+### 0. Adressene våre — les token_endpoint og resources_supported herfra, ikke fra hukommelsen.
+# Lokalt er resources_supported tre http://localhost-adresser (studio, utsteder, verifier),
+# ikke api://-formen fra kom-i-gang-guiden. Vi fanger studio-adressen som «resource» i steg 2.
+GET {{studio}}/.well-known/oauth-authorization-server
+Accept: application/json
+
+> {%
+  client.test("metadata svarer", () => client.assert(response.status === 200));
+  client.global.set("tokenEndpoint", response.body.token_endpoint);
+  const resources = response.body.resources_supported;
+  client.global.set("studioResource", resources.find(r => r.includes("8080") || r.includes("bevisstudio")) ?? resources[0]);
+  client.global.set("verifierResource", resources.find(r => r.includes("8095") || r.includes("verifier")) ?? resources[1]);
+  client.log("resources_supported: " + JSON.stringify(resources));
+%}
+
+### 1. Integrasjonsklienten.
+# I TEST: hopp over dette kallet. Lag klienten i kontrollflata (Organisasjon → Integrasjonsklienter,
+# autentisering client_secret, knappen «Velg alle scopes»), og lim clientId/clientSecret inn i
+# http-client.env.json. Registreringen er en medlemsflate; et klient-token slipper ikke inn her.
+# LOKALT går kallet rett gjennom (du er demoorganisasjonens medlem), og hemmeligheten i svaret vises
+# ÉN gang. Scopene under er unionen reisen trenger — beskjær til det appen din faktisk bruker.
+POST {{studio}}/v1/integration-clients
+Content-Type: application/json
+
+{
+  "name": "Hackathon-appen",
+  "authentication": { "method": "CLIENT_SECRET" },
+  "allowedScopes": [
+    "issuers:read", "verifiers:read",
+    "credential-types:read", "credential-types:write",
+    "issuance-rules:read", "issuance-rules:write",
+    "verification-rules:read", "verification-rules:write",
+    "certificates:read", "certificates:write",
+    "access-certificates:read", "access-certificates:write",
+    "credentials:read", "credentials:write",
+    "issuance:read", "issuance:write",
+    "presentations:read", "presentations:write",
+    "verification:read", "verification:write"
+  ],
+  "scopeRestriction": null
+}
+
+> {%
+  client.test("klient registrert", () => client.assert(response.status === 201, "fikk " + response.status));
+  client.global.set("clientId", response.body.clientId);
+  client.global.set("clientSecret", response.body.clientSecret);
+  client.log("clientId: " + response.body.clientId + "  (hemmeligheten vises aldri igjen — den ligger nå i client.global)");
+%}
+
+### 2a. Hent bearer-token for BEVISSTUDIO (client_credentials, client_secret_basic).
+# Ett token gjelder ÉN tjeneste (resource). Lokalt lever tokenet 12 timer, i prod 5 minutter —
+# les expires_in, ikke anta. Uten scope får du alt klienten er registrert med.
+POST {{studio}}/oauth/token
+Content-Type: application/x-www-form-urlencoded
+Authorization: Basic {{clientId}} {{clientSecret}}
+
+grant_type=client_credentials&resource={{studioResource}}
+
+> {%
+  if (response.status === 200) {
+    client.global.set("studioToken", response.body.access_token);
+    client.log("token_type=" + response.body.token_type + " expires_in=" + response.body.expires_in + " scope=" + response.body.scope);
+  } else if (response.body.error === "invalid_client" && request.environment.get("studio").includes("localhost")) {
+    client.global.set("studioToken", "lokal-rigg-ignorerer-token");
+    client.log("invalid_client er FORVENTET lokalt: token-endepunktet er av i dev-unauthenticated, og resten av fila trenger det ikke.");
+  } else {
+    client.test("token utstedt", () => client.assert(false, JSON.stringify(response.body)));
+  }
+%}
+
+### 2b. …og ett for VERIFIEREN. Steg 8 og 9 kaller verifier-servicen direkte, og studio-tokenet
+# gir 401 der (feil aud). Samme klient, samme hemmelighet, annen resource.
+POST {{studio}}/oauth/token
+Content-Type: application/x-www-form-urlencoded
+Authorization: Basic {{clientId}} {{clientSecret}}
+
+grant_type=client_credentials&resource={{verifierResource}}&scope=verification:write presentations:read presentations:write
+
+> {%
+  if (response.status === 200) {
+    client.global.set("verifierToken", response.body.access_token);
+  } else if (response.body.error === "invalid_client" && request.environment.get("studio").includes("localhost")) {
+    client.global.set("verifierToken", "lokal-rigg-ignorerer-token");
+    client.log("invalid_client er FORVENTET lokalt — se 2a.");
+  } else {
+    client.test("verifier-token utstedt", () => client.assert(false, JSON.stringify(response.body)));
+  }
+%}
+
+### 2c. Hvem er jeg? Finn utsteder- og verifier-id. Organisasjonen er aldri en parameter — den
+# utledes av klienten. Riggen har nøyaktig én av hver.
+GET {{studio}}/v1/issuers
+Authorization: Bearer {{studioToken}}
+
+> {%
+  client.test("har en utsteder", () => client.assert(response.body.length > 0, "riggen har ingen utsteder — kjører ./gradlew dev?"));
+  client.global.set("issuerId", response.body[0].id);
+%}
+
+###
+GET {{studio}}/v1/verifiers
+Authorization: Bearer {{studioToken}}
+
+> {%
+  client.test("har en verifier", () => client.assert(response.body.length > 0));
+  client.global.set("verifierId", response.body[0].id);
+%}
+
+### 2d. SERTIFIKATER — begge to, før noe annet. Uten dem ser resten av reisen ut til å virke helt
+# til lommeboka: utstederen svarer «unsupported_credential_type: Utstederen har ikke et aktivt
+# sertifikat» når beviset skal signeres (steg 7 → lommebok), og verifieren svarer 409 på steg 8.
+# Begge kallene adopterer Kantegas sandkassesertifikat og er idempotente — kjør dem uansett.
+# Kontrollflata har samme knapp: Utstedere → <utsteder> → Sertifikater → «Bruk Kantega-sertifikatet».
+POST {{studio}}/v1/issuers/{{issuerId}}/certificates/platform-default
+Authorization: Bearer {{studioToken}}
+
+> {%
+  client.test("utstederen har sertifikat", () => client.assert(response.status === 200 && response.body.status === "ACTIVE", JSON.stringify(response.body)));
+  client.log("utsteder: " + response.body.status + " " + (response.body.subject ?? "") + " utløper " + response.body.notAfter);
+%}
+
+###
+POST {{studio}}/v1/verifiers/{{verifierId}}/access-certificates/platform-default
+Authorization: Bearer {{studioToken}}
+
+> {%
+  client.test("verifieren har tilgangssertifikat", () => client.assert(response.status < 300, JSON.stringify(response.body)));
+%}
+
+### 3. Bevismalen (bevistypen). Send IKKE «vct» — den avledes av navnet og utstederens adresse
+# (ADR 0040) og låses for alltid, også ved omdøping. Sluggen kommer av «name».
+# revocationSearchable: true på kortnummeret gjør at steg 9 kan finne beviset ved søk.
+# dataType: STRING | NUMBER | BOOLEAN | DATE | IMAGE. validFor er ISO-8601-periode (default P1Y).
+POST {{studio}}/v1/credential-types
+Content-Type: application/json
+Authorization: Bearer {{studioToken}}
+
+{
+  "name": "Hackathon-kort",
+  "validFor": "P1Y",
+  "claims": [
+    { "name": "worker_name",     "dataType": "STRING", "mandatory": true },
+    { "name": "hms_card_number", "dataType": "STRING", "mandatory": true, "revocationSearchable": true },
+    { "name": "employer",        "dataType": "STRING", "mandatory": true },
+    { "name": "birth_date",      "dataType": "DATE",   "mandatory": true }
+  ]
+}
+
+> {%
+  client.test("bevismal opprettet", () => client.assert(response.status === 201, JSON.stringify(response.body)));
+  client.global.set("credentialTypeId", response.body.id);
+  client.log("vct (avledet): " + response.body.vct);
+%}
+
+### 4. Utstedelsesregelen: HVEM utsteder HVA, og HVORDAN lommeboka får det.
+# method: PRE_AUTHORIZED_CODE (QR/lenke rett fra ditt system — hackathon-valget),
+#         AUTHORIZATION_CODE (brukeren logger inn hos en authProviderId først),
+#         CREDENTIAL_AGAINST_CREDENTIAL (bevis mot et annet bevis).
+POST {{studio}}/v1/issuance-rules
+Content-Type: application/json
+Authorization: Bearer {{studioToken}}
+
+{
+  "issuerId": "{{issuerId}}",
+  "credentialTypeId": "{{credentialTypeId}}",
+  "name": "Hackathon-kort, forhåndsautorisert",
+  "method": "PRE_AUTHORIZED_CODE"
+}
+
+> {%
+  client.test("regel opprettet", () => client.assert(response.status === 201, JSON.stringify(response.body)));
+  client.global.set("issuanceRuleId", response.body.id);
+%}
+
+### 5. PUBLISER regelen til utstederen. OBLIGATORISK: uten dette svarer steg 7 med
+# 409 issuance-rule-not-deployed. Svaret gir den ENDELIGE vct-en — det er den verifiseringsregelen
+# i steg 6 skal be om. standing.kind: NOT_DEPLOYED | UP_TO_DATE | OUTDATED (endret du malen: PUT igjen).
+PUT {{studio}}/v1/issuance-rules/{{issuanceRuleId}}/deployment
+Content-Type: application/json
+Authorization: Bearer {{studioToken}}
+
+{}
+
+> {%
+  client.test("publisert", () => client.assert(response.status === 200 && response.body.deployed, JSON.stringify(response.body)));
+  client.global.set("vct", response.body.deployed.vct);
+  client.log("standing: " + response.body.standing.kind + "  vct: " + response.body.deployed.vct);
+%}
+
+### 6. Verifiseringsregelen: HVA spør vi om? Spørringen er DCQL (OID4VP 1.0).
+# Merk hva som IKKE bes om: birth_date ligger i beviset, men porten får den aldri. Det er selektiv
+# fremvisning, og det er poenget med hele greia. delivery utelatt = POLL (du spør). Vil du ha svaret
+# dyttet: "delivery": {"kind": "WEBHOOK", "endpoint": "https://…"} — se webhook-mottak.md.
+POST {{studio}}/v1/verification-rules
+Content-Type: application/json
+Authorization: Bearer {{studioToken}}
+
+{
+  "verifierId": "{{verifierId}}",
+  "name": "Porten på hackathonet",
+  "query": {
+    "credentials": [
+      {
+        "id": "hackathon_kort",
+        "format": "dc+sd-jwt",
+        "meta": { "vct_values": ["{{vct}}"] },
+        "claims": [
+          { "path": ["worker_name"] },
+          { "path": ["hms_card_number"] },
+          { "path": ["employer"] }
+        ]
+      }
+    ]
+  }
+}
+
+> {%
+  client.test("verifiseringsregel opprettet", () => client.assert(response.status === 201, JSON.stringify(response.body)));
+  client.global.set("verificationRuleId", response.body.id);
+%}
+
+### 7. Bestill en utstedelse. Bevistype og metode kommer fra REGELEN, ikke fra kroppen.
+# Svaret er den komplette lommeboklenka (offerUri) — gjør den til QR som den er, ikke pakk den inn.
+# txCode: true gir en 6-sifret engangskode brukeren må taste i lommeboka (bare PRE_AUTHORIZED_CODE).
+# Ukjent claim-navn gir 400 med lista over gyldige.
+POST {{studio}}/v1/issuance-rules/{{issuanceRuleId}}/test-issuances
+Content-Type: application/json
+Authorization: Bearer {{studioToken}}
+
+{
+  "format": "dc+sd-jwt",
+  "claims": {
+    "worker_name": "Kari Betong",
+    "hms_card_number": "NO-1234567",
+    "employer": "Hackathon Entreprenør AS",
+    "birth_date": "1990-04-12"
+  },
+  "txCode": false
+}
+
+> {%
+  client.test("tilbud opprettet", () => client.assert(response.status === 201, JSON.stringify(response.body)));
+  client.global.set("offerId", response.body.offerId);
+  client.global.set("offerUri", response.body.offerUri);
+  client.log("\nTILBUD (QR / -Ptilbud):\n" + response.body.offerUri + "\n");
+%}
+
+### 8. Start en verifisering — mot VERIFIEREN direkte, med verifier-tokenet.
+# requestUri er en ENGANGS-hemmelighet: den forlater tjenesten nøyaktig én gang. Ikke logg den i prod.
+# Lommeboklenka bygges slik: openid4vp://?client_id=<urlencoded>&request_uri=<urlencoded>
+# continuationUri (valgfri) gir same-device-flyt: lommeboka sender brukeren dit etterpå.
+POST {{verifier}}/v1/presentation-sessions
+Content-Type: application/json
+Authorization: Bearer {{verifierToken}}
+
+{
+  "ruleId": "{{verificationRuleId}}"
+}
+
+> {%
+  client.test("sesjon startet", () => client.assert(response.status === 201, JSON.stringify(response.body)));
+  client.global.set("sessionId", response.body.id);
+  const uri = "openid4vp://?client_id=" + encodeURIComponent(response.body.clientId)
+            + "&request_uri=" + encodeURIComponent(response.body.requestUri);
+  client.global.set("presentationUri", uri);
+  client.log("\nFORESPØRSEL (QR / -Pforespoersel):\n" + uri + "\n");
+%}
+
+### ── HER TAR LOMMEBOKA OVER ──────────────────────────────────────────────────────────────────
+# Uten telefon (riggen må kjøre i et annet vindu; begge lenkene i SAMME kall, hermetegnene er
+# ikke pynt):
+#
+#   ./gradlew lommebok -Ptilbud="<offerUri fra steg 7>" -Pforespoersel="<presentationUri fra steg 8>"
+#
+# Alternativ: demolommeboka på http://localhost:3100/textInputPage tar imot begge lenkene som tekst.
+# Telefon krever tunnel satt FØR riggen startet (README § «Lommeboka»).
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+
+### 9a. Status på tilbudet: VALID → ISSUED (eller EXPIRED / FAILED).
+GET {{studio}}/v1/issuance-rules/{{issuanceRuleId}}/test-issuances/{{offerId}}
+Authorization: Bearer {{studioToken}}
+
+### 9b. Fase på fremvisningen: PENDING_REQUEST → REQUEST_DELIVERED → RESPONSE_RECEIVED → VERIFIED | REJECTED | EXPIRED
+GET {{verifier}}/v1/presentation-sessions/{{sessionId}}
+Authorization: Bearer {{verifierToken}}
+
+### 9c. RESULTATET. 404 til sesjonen er avgjort — det er ikke en feil, det er «ikke ennå».
+# VERIFIED: presentations[].claims er det regelen ba om (ingen birth_date) pluss bevisets egne
+# iss/vct/status/exp/iat, og checks[] er de sju kontrollene med name/outcome/detail:
+# ISSUER_SIGNATURE, ISSUER_TRUST, SELECTIVE_DISCLOSURE, REVOCATION, EXPIRY, HOLDER_BINDING, MATCHES_REQUEST.
+# REJECTED: failures[] sier hvilken av dem som felte den.
+GET {{verifier}}/v1/presentation-sessions/{{sessionId}}/result
+Authorization: Bearer {{verifierToken}}
+
+> {%
+  if (response.status === 200) {
+    client.log("status: " + response.body.status);
+    (response.body.presentations ?? []).forEach(p => client.log("claims: " + JSON.stringify(p.claims)));
+    (response.body.failures ?? []).forEach(f => client.log("FEILET: " + JSON.stringify(f)));
+  } else {
+    client.log("ikke avgjort ennå (" + response.status + ") — har lommeboka svart?");
+  }
+%}
+
+### 9d. Alle utstedte bevis i organisasjonen. Lista er delt mellom ALLE bevistyper — «det første
+# i lista» er nesten aldri det du nettopp utstedte. Bruk søk (9e) eller match på statusListUri + statusListIndex.
+GET {{studio}}/v1/credentials
+Authorization: Bearer {{studioToken}}
+
+### 9e. Finn beviset på kortnummeret. Virker fordi hms_card_number ble merket revocationSearchable
+# i steg 3 — utstederen lagrer bare en HMAC av verdien, klartekst går inn her og hashes hos ham.
+POST {{studio}}/v1/credentials/search
+Content-Type: application/json
+Authorization: Bearer {{studioToken}}
+
+{
+  "claims": { "hms_card_number": "NO-1234567" }
+}
+
+> {%
+  client.test("fant beviset", () => client.assert(response.body.length > 0, "ingen treff — har lommeboka hentet beviset (9a = ISSUED)?"));
+  const newest = response.body[response.body.length - 1];
+  client.global.set("credentialId", newest.id);
+  client.log("credentialId: " + newest.id + "  lifecycle: " + newest.lifecycle);
+%}
+
+### 9f. Tallene: issued / revoked / suspended.
+GET {{studio}}/v1/credentials/statistics
+Authorization: Bearer {{studioToken}}
+
+### 10. REVOKER. reason er valgfri, men kroppen må være et JSON-objekt. Svaret har lifecycle: REVOKED.
+# Statuslista oppdateres i sanntid: neste fremvisning (steg 8 på nytt + lommebok) blir REJECTED på
+# check REVOCATION. suspend/reinstate finnes på samme form hvis du vil ha den midlertidige varianten.
+POST {{studio}}/v1/credentials/{{credentialId}}/revoke
+Content-Type: application/json
+Authorization: Bearer {{studioToken}}
+
+{
+  "reason": "Arbeidsforholdet er avsluttet"
+}
+
+> {%
+  client.test("revokert", () => client.assert(response.status === 200 && response.body.lifecycle === "REVOKED", JSON.stringify(response.body)));
+%}
+
+### 10b. Bevis at det virket: ny sesjon, samme regel. Åpne denne lenka i den SAMME lommeboka som
+# holder beviset fra steg 7. To utfall, begge riktige (verifisert 2026-09-09):
+#   - Demolommeboka vår (3100 / wallet-service) slår opp statuslista SELV og nekter å dele:
+#     «Beviset er trukket tilbake (revokert) og kan ikke deles». Verifieren får aldri et svar, og 9c
+#     blir stående på 404 til sesjonen utløper.
+#   - En lommebok som deler likevel (shared/test-wallet i e2e, evt. en telefon) får 9c = REJECTED
+#     med failures[0].check == REVOCATION.
+# NB: ./gradlew lommebok kan IKKE brukes her — den husker ingenting mellom kjøringer, og et nytt
+# tilbud gir et nytt, u-revokert bevis. Revokeringsdemoen krever en lommebok som beholder beviset:
+# demolommeboka på http://localhost:3100 (lim inn på /textInputPage) eller en telefon via tunnel.
+POST {{verifier}}/v1/presentation-sessions
+Content-Type: application/json
+Authorization: Bearer {{verifierToken}}
+
+{
+  "ruleId": "{{verificationRuleId}}"
+}
+
+> {%
+  client.global.set("sessionId", response.body.id);
+  const uri = "openid4vp://?client_id=" + encodeURIComponent(response.body.clientId)
+            + "&request_uri=" + encodeURIComponent(response.body.requestUri);
+  client.global.set("presentationUri", uri);
+  client.log("\nNY FORESPØRSEL etter revokering:\n" + uri + "\n");
+%}
+
+### Rydd opp (valgfritt): trekk integrasjonsklienten tilbake. Kan ikke gjøres om.
+# DELETE {{studio}}/v1/integration-clients/{{clientId}}
+# Authorization: Bearer {{studioToken}}

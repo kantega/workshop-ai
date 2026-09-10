@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #f5f4ef;
+  --surface: #ffffff;
+  --ink: #1c2321;
+  --muted: #5d6763;
+  --line: #d9d8d0;
+  --brand: #1f5f4a;
+  --brand-ink: #ffffff;
+  --brand-soft: #e3efe9;
+  --accent: #c8681e;
+  --ok: #1f7a3f;
+  --ok-soft: #e1f3e6;
+  --warn: #8a5a00;
+  --warn-soft: #fbf0d3;
+  --off: #6b6b6b;
+  --off-soft: #ececec;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-brand: var(--brand);
+  --color-brand-ink: var(--brand-ink);
+  --color-brand-soft: var(--brand-soft);
+  --color-accent: var(--accent);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-off: var(--off);
+  --color-off-soft: var(--off-soft);
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-brand text-brand-ink hover:bg-[#184b3b];
+  }
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed border border-line bg-surface text-ink hover:bg-brand-soft;
+  }
+  .card {
+    @apply rounded-lg border border-line bg-surface p-5;
+  }
+}

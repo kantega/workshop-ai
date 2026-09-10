@@ -59,6 +59,102 @@ interface Row {
   [key: string]: unknown;
 }
 
+/** Spørringen fremvisningsregelen bærer. DCQL (OID4VP 1.0) — bare den biten appen faktisk setter. */
+interface DcqlQuery {
+  credentials: {
+    id: string;
+    format: string;
+    meta: { vct_values: string[] };
+    claims: { path: string[] }[];
+  }[];
+}
+
+/** Hva appen ber om NÅ: bevistypen slik den er publisert, og claimene spec-en lister. */
+function presentationQuery(spec: AppSpec, vct: string): DcqlQuery {
+  return {
+    credentials: [
+      {
+        id: spec.rule.queryId,
+        format: "dc+sd-jwt",
+        meta: { vct_values: [vct] },
+        claims: spec.rule.requestedClaims.map((claim) => ({ path: [claim] })),
+      },
+    ],
+  };
+}
+
+/**
+ * Sammenligner bare det appen selv setter: format, hvilke vct-er som godtas, og claim-stiene.
+ * Plattformen kan normalisere og fylle på med felt vi aldri sendte, og en rå JSON-sammenligning
+ * ville da meldt avvik på hver eneste last og skrevet regelen på nytt uten grunn.
+ */
+function sameQuery(current: DcqlQuery, want: DcqlQuery): boolean {
+  const mine = current.credentials?.[0];
+  const theirs = want.credentials[0];
+  if (!mine) return false;
+  const paths = (credential: DcqlQuery["credentials"][number]) =>
+    (credential.claims ?? [])
+      .map((claim) => claim.path.join("."))
+      .sort()
+      .join(",");
+  const vcts = (credential: DcqlQuery["credentials"][number]) => [...(credential.meta?.vct_values ?? [])].sort().join(",");
+  return mine.format === theirs.format && vcts(mine) === vcts(theirs) && paths(mine) === paths(theirs);
+}
+
+/**
+ * En regel som finnes fra før gjenbrukes på NAVN, og det er riktig helt til noe under navnet har
+ * flyttet på seg. Bytter du bevistype, utsteder eller claim-liste, peker den gamle regelen fortsatt
+ * på den GAMLE vct-en. Alt ser da friskt ut — oppsettet går grønt, QR-en tegnes — helt til
+ * lommeboka, som ikke eier noe som matcher og svarer «request_data_no_document». Derfor leser vi
+ * hva regelen faktisk spør om, og retter avviket framfor å gjenbruke den blindt.
+ */
+async function reconcileRule(
+  existing: Row,
+  verifierId: string,
+  name: string,
+  want: DcqlQuery,
+  onStep: (step: string) => void,
+): Promise<string> {
+  let current = existing.query as DcqlQuery | undefined;
+  if (!current) {
+    try {
+      current = (await call<{ query?: DcqlQuery }>(studio(`/v1/verification-rules/${existing.id}`))).query;
+    } catch {
+      current = undefined;
+    }
+  }
+
+  // Får vi ikke lest spørringen, vet vi ingenting — og en regel vi ikke kan bedømme er ingen grunn
+  // til å stoppe et oppsett som kanskje er helt i orden. Vi gjenbruker den, men sier fra i konsollen.
+  if (!current) {
+    console.warn(
+      `[oppsett] Kunne ikke lese spørringen til fremvisningsregelen «${name}» (${existing.id}) — ` +
+        "gjenbruker den uten å sjekke at den peker på riktig bevis.",
+    );
+    return existing.id;
+  }
+
+  if (sameQuery(current, want)) return existing.id;
+
+  onStep(`Fremvisningsregelen «${name}» peker på feil bevis — oppdaterer …`);
+  try {
+    await call(studio(`/v1/verification-rules/${existing.id}`), {
+      method: "PUT",
+      body: JSON.stringify({ verifierId, name, query: want }),
+    });
+  } catch (failure) {
+    const had = current.credentials?.[0]?.meta?.vct_values?.join(", ") ?? "(ukjent)";
+    throw new Error(
+      `Fremvisningsregelen «${name}» finnes fra før, men spør etter et annet bevis enn det appen nå ` +
+        `utsteder (regelen: ${had} — appen: ${want.credentials[0].meta.vct_values.join(", ")}). Lommeboka ` +
+        "finner da ingenting å vise fram og svarer «request_data_no_document». Regelen kunne ikke " +
+        `oppdateres automatisk (${(failure as Error).message}) — slett den under Verifiere → ` +
+        "Fremvisningsregler i kontrollflata, eller gi den et nytt navn i src/spec.ts, og last siden på nytt.",
+    );
+  }
+  return existing.id;
+}
+
 /**
  * Rigger opp appens behov idempotent i organisasjonen tokenet tilhører: finn eller opprett
  * bevistypen, utstedelsesregelen og fremvisningsregelen, publiser bevistypen til utstederen, og
@@ -150,28 +246,17 @@ export async function ensureSetup(spec: AppSpec, onStep: (step: string) => void)
   }
 
   onStep(`Fremvisningsregelen «${spec.rule.name}» …`);
+  const query = presentationQuery(spec, vct);
   const rules = await call<Row[]>(studio("/v1/verification-rules"));
-  const ruleId =
-    rules.find((rule) => rule.name === spec.rule.name)?.id ??
-    (
-      await call<Row>(studio("/v1/verification-rules"), {
-        method: "POST",
-        body: JSON.stringify({
-          verifierId: verifierRow.id,
-          name: spec.rule.name,
-          query: {
-            credentials: [
-              {
-                id: spec.rule.queryId,
-                format: "dc+sd-jwt",
-                meta: { vct_values: [vct] },
-                claims: spec.rule.requestedClaims.map((claim) => ({ path: [claim] })),
-              },
-            ],
-          },
-        }),
-      })
-    ).id;
+  const existing = rules.find((rule) => rule.name === spec.rule.name);
+  const ruleId = existing
+    ? await reconcileRule(existing, verifierRow.id, spec.rule.name, query, onStep)
+    : (
+        await call<Row>(studio("/v1/verification-rules"), {
+          method: "POST",
+          body: JSON.stringify({ verifierId: verifierRow.id, name: spec.rule.name, query }),
+        })
+      ).id;
 
   return {
     issuanceRuleId,
