@@ -655,6 +655,28 @@
   font-size: 0.9375rem;
 }
 
+/*
+ * Lenkene skal stå på samme linje som brikkene, også når raden brekker. `align-items: center` gjør
+ * jobben så lenge alt ligger på samme flex-linje, men med mange brikker havner lenkene på en linje
+ * for seg - og der er de sentrert mot ingenting, så de ser ut til å flyte.
+ *
+ * Derfor får de samme bokshøyde som en brikke: teksten (1.5em) pluss brikkens luft og ramme. Da
+ * blir linjene like høye, og lenketeksten lander på samme optiske linje uansett hvor bruddet kom.
+ * Bonus: klikkflaten blir 40 px i stedet for 20, som er nærmere det universell utforming ber om.
+ */
+.vk-shared-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.vk-shared .btn-link,
+.vk-shared-actions .muted {
+  display: inline-flex;
+  align-items: center;
+  min-height: calc(1.5em + 1rem + 2px);
+}
+
 .vk-chip {
   display: inline-flex;
   align-items: center;
@@ -775,9 +797,25 @@
   border-color: var(--line);
 }
 
+/*
+ * Kortet er et rutenett (26px + 1fr), og et rutenettelement har `min-width: auto` - det kan ikke
+ * krympe under sitt eget min-content. Én pille med `white-space: nowrap` inni her setter dermed
+ * gulvet for hele kolonnen, og «Mangler: Inntektsbekreftelse for denne ordningen» er bredere enn
+ * et smalt kort. Kolonnen kan ikke gi etter, så innholdet renner ut av rammen i stedet.
+ *
+ * `min-width: 0` fjerner gulvet, på elementet selv og på barna, og `overflow-wrap` tar de virkelig
+ * ubrytelige ordene (lange ordningsnavn, en url som sniker seg inn i et bevis). Pillen får lov å
+ * brekke i regelen under - uten den ville teksten bare rent ut av pillen i stedet for ut av kortet.
+ */
 .vk-service-body {
   display: grid;
   gap: 0.5rem;
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+.vk-service-body > * {
+  min-width: 0;
 }
 
 .vk-service-body .cat {
@@ -801,6 +839,16 @@
   padding-top: 0.25rem;
   font-size: 0.9375rem;
   font-weight: 500;
+}
+
+/*
+ * Piller er `nowrap` overalt ellers, og det er riktig for korte merkelapper. Her bærer pillen en
+ * hel setning - «Mangler: Inntektsbekreftelse for denne ordningen», av og til flere adskilt med
+ * komma - og en merkelapp som ikke kan brekke er en merkelapp som sprenger kortet.
+ */
+.vk-verdict .pill {
+  white-space: normal;
+  text-align: left;
 }
 
 .vk-verdict .ok {

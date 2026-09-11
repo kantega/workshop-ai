@@ -72,6 +72,10 @@ function Innbyggerflate({ route }: { route: Exclude<Route, "verktoy"> }) {
   // Samme person deler mer: slå sammen. En annen person (annen eID): start på nytt, ellers arver
   // hun forrige persons bevis. Demo-lommeboka starter alltid på nytt.
   const onShared = (incoming: PresentedCredential[], mode: "merge" | "replace" = "merge") => {
+    // Ingenting kom fram, og ingenting lå der fra før: da har tjenestesiden ingenting å vise, og
+    // vakten under ville sendt henne rett tilbake til QR-koden - som ser ut som en ny forespørsel
+    // om å skanne. Bli stående, så får hun beskjeden fra kortet i stedet for en ny kode.
+    if (incoming.length === 0 && (mode === "replace" || credentials.length === 0)) return;
     setCredentials((existing) => (mode === "replace" || !samePerson(existing, incoming) ? incoming : mergeCredentials(existing, incoming)));
     setSent([]);
     go("tjenester");

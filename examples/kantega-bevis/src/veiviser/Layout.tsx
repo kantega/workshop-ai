@@ -33,9 +33,9 @@ export function Layout({ children, person }: { children: ReactNode; person?: str
         <div className="wrap">
           <div>
             <strong>Våler kommune</strong>
-            Vålgutua 251, 2436 Våler i Solør
+            Herredshuset, Kjosveien 1, 1592 Våler i Østfold
             <br />
-            Telefon 62 42 40 00 · postmottak@valer.kommune.no
+            <a href="tel:+4769289100">69 28 91 00</a> · <a href="mailto:postmottak@valer.kommune.no">postmottak@valer.kommune.no</a>
           </div>
           <ul>
             <li>

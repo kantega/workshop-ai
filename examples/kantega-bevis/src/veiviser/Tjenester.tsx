@@ -80,13 +80,17 @@ export function Tjenester({
                 <span className="check">✓</span> {chipText(credential)}
               </span>
             ))}
-            <button className="btn-link" onClick={onShareMore}>
-              Del flere bevis
-            </button>
-            <span className="muted">·</span>
-            <button className="btn-link" onClick={onForget}>
-              Glem det jeg delte
-            </button>
+            {/* De to lenkene hører sammen. Uten grupperingen kan raden brekke mellom dem, og da
+                blir «·» stående alene i starten av neste linje. */}
+            <span className="vk-shared-actions">
+              <button className="btn-link" onClick={onShareMore}>
+                Del flere bevis
+              </button>
+              <span className="muted" aria-hidden="true">·</span>
+              <button className="btn-link" onClick={onForget}>
+                Glem det jeg delte
+              </button>
+            </span>
           </div>
         </div>
       </section>
@@ -251,7 +255,7 @@ function ServiceCard({ assessment, selected, onToggle, onShareMore }: { assessme
         <p>{service.summary}</p>
 
         <div className="vk-verdict">
-          {outcome === "ready" && <span className="ok">✓ Du har rett på dette, ut fra {assessment.coveredLabels.join(" og ").toLowerCase()}</span>}
+          {outcome === "ready" && <span className="ok">✓ Du kan ha rett på dette, ut fra {assessment.coveredLabels.join(" og ").toLowerCase()}</span>}
           {outcome === "ineligible" && (
             <span className="off">
               ✗ Du har ikke rett på dette. {failed.map((check) => `${check.label} sier «${check.evidence}», og ${lowerFirst(check.rule)}`).join(". ")}.

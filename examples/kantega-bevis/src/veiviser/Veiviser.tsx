@@ -1,6 +1,6 @@
 import QRCode from "qrcode";
 import { useEffect, useRef, useState } from "react";
-import { presentationPhase, presentationResult, startPresentation, walletUri, type VeiviserSetup } from "../api";
+import { presentationPhase, presentationResult, startPresentation, walletUri, type StartedPresentation, type VeiviserSetup } from "../api";
 import { CREDENTIAL_GROUP_LABELS, CREDENTIALS, SERVICES, servicesUsing, type CredentialGroup, type PresentedCredential } from "../catalog";
 import { DemoWallet } from "./DemoWallet";
 import { toCredentials } from "./presentation";
@@ -11,6 +11,8 @@ type Sharing =
   | { kind: "starting" }
   | { kind: "waiting"; sessionId: string; qr: string; uri: string; phase: string }
   | { kind: "verified" }
+  /** Godkjent av verifieren, men uten et eneste bevis appen kan regne på. Se kommentaren under. */
+  | { kind: "tom"; unknown: string[] }
   | { kind: "rejected"; reason: string }
   | { kind: "expired" }
   | { kind: "error"; message: string };
@@ -39,6 +41,7 @@ export function Veiviser({
   const [sharing, setSharing] = useState<Sharing>({ kind: "starting" });
   const [attempt, setAttempt] = useState(0);
   const polling = useRef<number | null>(null);
+  const session = useRef<{ key: string; started: Promise<StartedPresentation> } | null>(null);
   const setup = setupState.kind === "ready" ? setupState.setup : null;
 
   useEffect(() => {
@@ -49,9 +52,25 @@ export function Veiviser({
       polling.current = null;
     };
 
+    /**
+     * ÉN sesjon per forsøk, selv om effekten kjører to ganger. StrictMode kjører hver montering
+     * som kjør-rydd-kjør, og på FØRSTE montering merkes det ikke: `setup` er ennå null, så begge
+     * rundene snur i linjen over. På en RE-montering - hun kommer tilbake til forsiden for å dele
+     * ett bevis til - er `setup` klar, og da lager to runder to sesjoner. Den første blir
+     * `cancelled` av opprydningen mellom dem, så QR-koden hun ser hører til den andre, og den
+     * første blir liggende ubrukt hos verifieren.
+     *
+     * Vakten husker LØFTET, ikke bare at vi har startet. En vanlig `if (startet) return` ville
+     * stoppet runde to, mens runde én allerede var avbrutt - og da hadde ingen tegnet koden.
+     * Begge rundene venter på samme sesjon; den avbrutte gjør ingenting med den.
+     */
+    const key = `${attempt}:${setup.ruleId}`;
+    if (session.current?.key !== key) session.current = { key, started: startPresentation(setup.ruleId) };
+    const pending = session.current.started;
+
     (async () => {
       try {
-        const started = await startPresentation(setup.ruleId);
+        const started = await pending;
         const uri = walletUri(started);
         const qr = await QRCode.toDataURL(uri, { width: 512, margin: 1, color: { dark: "#2c280e", light: "#ffffff" } });
         if (cancelled) return;
@@ -71,6 +90,14 @@ export function Veiviser({
             if (result.status === "VERIFIED") {
               const { credentials, unknown } = toCredentials(result, setup);
               if (unknown.length > 0) console.warn("Bevis appen ikke kjenner:", unknown);
+              // «Godkjent, men tomt» er ikke det samme som godkjent. Sender vi videre her, lander
+              // hun på tjenestesiden uten bevis, vakten i App.tsx sender henne rett tilbake hit,
+              // og siden lager en NY QR-kode. Utenfra ser det ut som at skanningen ikke skjedde og
+              // at appen ber om koden to ganger. Vi blir stående og sier hva som faktisk skjedde.
+              if (credentials.length === 0) {
+                setSharing({ kind: "tom", unknown });
+                return;
+              }
               setSharing({ kind: "verified" });
               window.setTimeout(() => onShared(credentials), 500);
             } else if (result.status === "EXPIRED") {
@@ -159,8 +186,7 @@ export function Veiviser({
           <p>
             Når du skanner, ber kommunen om disse {CREDENTIALS.length} bevisene. Alle er valgfrie: du velger i lommeboka hvilke du
             deler, og hvert bevis åpner sine tjenester. Vi ber bare om det tjenestereglene faktisk sjekker: alder, bosted,
-            gyldighet, førerkortklasse, og om du kvalifiserer til en ordning. Aldri diagnosen din, og aldri hva du tjener -
-            av inntektsbekreftelsen får kommunen «kvalifisert: ja», ikke beløpet. Til sammen dekker de {SERVICES.length} tjenester.
+            gyldighet, førerkortklasse, og om du kvalifiserer til en ordning. Vi kan innhente og dele inntektsbekreftelse. Til sammen dekker de {SERVICES.length} tjenester.
           </p>
         </div>
         {(Object.keys(CREDENTIAL_GROUP_LABELS) as CredentialGroup[]).map((group) => (
@@ -254,6 +280,7 @@ function QrCard({ setupState, sharing, onRestart }: { setupState: SetupState; sh
         <div className="vk-qr placeholder">
           {sharing.kind === "starting" && "Lager kode …"}
           {sharing.kind === "verified" && "Bevisene er verifisert"}
+          {sharing.kind === "tom" && "Ingen bevis kom fram"}
           {sharing.kind === "expired" && "Koden gikk ut"}
           {sharing.kind === "rejected" && "Delingen ble avvist"}
           {sharing.kind === "error" && "Fikk ikke kontakt"}
@@ -283,6 +310,25 @@ function QrCard({ setupState, sharing, onRestart }: { setupState: SetupState; sh
         <span className="vk-status">
           <span className="dot ok" /> Henter tjenestene dine …
         </span>
+      )}
+
+      {sharing.kind === "tom" && (
+        <>
+          <span className="vk-status">
+            <span className="dot bad" /> Delingen ble godkjent, men vi fikk ingen bevis vi kan regne på.
+          </span>
+          <p className="small muted">
+            {sharing.unknown.length > 0
+              ? `Lommeboka delte noe portalen ikke kjenner: ${sharing.unknown.join(", ")}. Da er det katalogen i appen som må utvides, ikke noe du kan gjøre her.`
+              : "Enten valgte du bort alle bevisene i lommeboka, eller så er verifieren satt opp til å svare med bare utfallet og ikke innholdet. Er lommeboka tom, legger verktøypanelet inn testbevis."}
+          </p>
+          <button className="btn btn-primary" onClick={onRestart}>
+            Lag ny kode
+          </button>
+          <a className="small" href="#/verktoy">
+            Åpne verktøypanelet
+          </a>
+        </>
       )}
 
       {(sharing.kind === "expired" || sharing.kind === "rejected" || sharing.kind === "error") && (
