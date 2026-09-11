@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { ensureVeiviser } from "./api";
 import { claimText, CREDENTIALS, mergeCredentials, VEIVISER_RULE, type Assessment, type PresentedCredential } from "./catalog";
 import Verktoy from "./Verktoy";
@@ -76,8 +77,24 @@ function Innbyggerflate({ route }: { route: Exclude<Route, "verktoy"> }) {
     // vakten under ville sendt henne rett tilbake til QR-koden - som ser ut som en ny forespørsel
     // om å skanne. Bli stående, så får hun beskjeden fra kortet i stedet for en ny kode.
     if (incoming.length === 0 && (mode === "replace" || credentials.length === 0)) return;
-    setCredentials((existing) => (mode === "replace" || !samePerson(existing, incoming) ? incoming : mergeCredentials(existing, incoming)));
-    setSent([]);
+    // Bevisene må være TEGNET FERDIG før hash-en endres, ellers finnes det en tegning der ruten er
+    // «tjenester» mens bevislisten fortsatt er tom - og vakten under sender henne rett tilbake til
+    // forsiden, som lager en NY QR-kode.
+    //
+    // Grunnen er prioritet, ikke rekkefølge. Etter en ekte skanning kommer vi hit fra en timer i
+    // Veiviser, og en setState derfra havner i standardkøen React tømmer litt senere. Men
+    // `hashchange` står på React sin liste over DISKRETE hendelser (se `getEventPriority` i
+    // react-dom, ved siden av «click» og «popstate»), så `setRoute` i lytteren tømmes med én gang
+    // og tegner ALENE: standardkøen med bevisene blir stående. Vakten ser tom liste, hash-en går
+    // tilbake til «/», og Veiviser monteres på nytt med en fersk sesjon.
+    //
+    // Det slo til nøyaktig én gang, og det er samme forklaring: andre gang er listen allerede full,
+    // så `credentials.length === 0` er falsk uansett hvilken tegning vakten treffer. Demo-lommeboka
+    // merket det aldri, fordi et klikk allerede er diskret og tømmes før `hashchange` rekker fram.
+    flushSync(() => {
+      setCredentials((existing) => (mode === "replace" || !samePerson(existing, incoming) ? incoming : mergeCredentials(existing, incoming)));
+      setSent([]);
+    });
     go("tjenester");
   };
 
